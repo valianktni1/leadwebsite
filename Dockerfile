@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY server.mjs account.mjs ./
+COPY lib ./lib
 COPY public ./public
 COPY seed-demos ./seed-demos
 ENV NODE_ENV=production PORT=3000 DATA_DIR=/data CONFIG_DIR=/config

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs, createReadStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createAccountStore, RequestError } from './account.mjs';
+import { createLeadService } from './lib/leads.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.mp4': 'video/mp4', '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.avif': 'image/avif' };
@@ -20,9 +21,10 @@ export async function createApp(options = {}) {
   const dataReal = await fs.realpath(data);
   const configDir = path.resolve(options.configDir || process.env.CONFIG_DIR || './config');
   if (inside(dataReal, configDir)) throw new Error('CONFIG_DIR must be outside the public demo dataset.');
-  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, demoExists: async slug => {
+  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, apifyToken:options.apifyToken, apifyClient:options.apifyClient, demoExists: async slug => {
     try { const real = await fs.realpath(path.join(data, slug, 'index.html')); return slugOK(slug) && inside(path.join(dataReal, slug), real); } catch { return false; }
   } });
+  const leads=await createLeadService({configDir,getToken:account.getApifyToken,apify:options.apifyClient,inspect:options.inspectWebsite});
   if (options.seedDir !== false) {
     const seeds = options.seedDir || path.join(ROOT, 'seed-demos');
     for (const entry of await fs.readdir(seeds, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; })) {
@@ -45,7 +47,7 @@ export async function createApp(options = {}) {
     if (method === 'HEAD') return res.end();
     createReadStream(filename).on('error', () => res.destroy()).pipe(res);
   }
-  return http.createServer(async (req, res) => {
+  const server=http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
@@ -61,8 +63,9 @@ export async function createApp(options = {}) {
         if (!['GET', 'HEAD'].includes(req.method) && (req.headers['sec-fetch-site'] === 'cross-site' || ![publicURL, `http://${req.headers.host}`].includes(req.headers.origin))) throw new RequestError(403, 'Use the dashboard to make changes.');
         if (await account.handle(req, res, pathname, json)) return;
         if (pathname === '/admin' || pathname === '/admin/') return serve(res, path.join(ROOT, 'public', account.authenticated(req) ? 'admin.html' : 'auth.html'));
-        if (['/admin/app.js', '/admin/style.css', '/admin/auth.js'].includes(pathname)) return serve(res, path.join(ROOT, 'public', path.basename(pathname)));
+        if (['/admin/app.js', '/admin/style.css', '/admin/auth.js', '/admin/leads.js', '/admin/leads.css'].includes(pathname)) return serve(res, path.join(ROOT, 'public', path.basename(pathname)));
         if (!account.authenticated(req)) return json(res, 401, { error: 'Please sign in to manage your demos.' });
+        if(await leads.handle(req,res,pathname,json))return;
         if (pathname === '/api/demos' && req.method === 'GET') {
           const entries = await fs.readdir(data, { withFileTypes: true });
           const demos = [];
@@ -147,6 +150,8 @@ export async function createApp(options = {}) {
       else res.destroy();
     }
   });
+  server.on('close',()=>{leads.close().catch(()=>{});});
+  return server;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

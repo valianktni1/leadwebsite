@@ -69,6 +69,38 @@ location / {
 }
 ```
 
+## UK lead finder
+
+The admin dashboard now has **Demo collection**, **Find UK leads** and **Saved leads** tabs. Search 363 sectors across 17 groups, enter a UK town/city/postcode, choose 10/25/50/100 businesses and set a per-search Apify maximum charge (US $0.25–$5 in the UI). Search results have business names, addresses, listed phone numbers, website and Maps links, ratings/review counts where supplied, a check timestamp and website review evidence. Only records whose source country is GB/UK are retained; closed businesses and duplicate place IDs are excluded. Results are scoped by the provider's location search; manually confirm each address before outreach.
+
+**Search settings** accepts an existing Apify token and stores it encrypted in the private config folder. **Check connection** only checks account access; it does not start a paid search. A server-side `APIFY_TOKEN` environment variable is also supported, with the saved encrypted token taking precedence. The app cannot extract a token from the ChatGPT connector: the TrueNAS app needs its own access to that same token.
+
+Selecting **Find UK businesses** starts a paid [Compass Google Maps Scraper](https://apify.com/compass/crawler-google-places) run through the [Apify API](https://docs.apify.com/api/v2/actors-runs-post). The app submits `maxTotalChargeUsd`, a five-minute provider timeout, one search term and a business count limit. Reviews, image extraction, AI competitor analysis and contact/person enrichment are disabled. Website/closed-place filters are applied locally after discovery to avoid adding provider filter events. The budget can limit how many results are returned. No searches run on page load, no automatic retries create replacement paid runs, and only one search runs at a time. The run ID links to the Apify console. Searches interrupted by an app restart are marked interrupted instead of restarted; a provider run can continue until its own timeout/cap. Check its linked run before starting another paid search.
+
+The app checks public homepage HTML on TrueNAS after discovery, with bounded downloads/timeouts and DNS/IP checks that block private network targets and redirects. It reports:
+
+- **No listed website:** the source listed no website; a separate unlisted website may still exist.
+- **Social / directory only:** the supplied link is a recognised social profile or directory.
+- **Website needs review:** multiple basic issues, such as missing mobile viewport declarations, HTTP-only delivery or legacy HTML, warrant a manual look.
+- **Manual check / unavailable:** dynamic pages, access controls or connection failures prevent a reliable check. These are never labelled old just because they failed.
+
+An old copyright year alone is not enough to flag a website. These are prospecting signals, not confirmed build dates or a complete design/SEO audit. Images and JavaScript rendering are not assessed. No OpenAI API key or AI service is required.
+
+Save prospects to a shortlist, add notes and mark them New, Contacted, Demo created or Not suitable. Export saved leads as CSV; formula-like values are escaped. Up to 20 searches and 2,000 saved leads persist in private `config/leads.json`. All lead endpoints require the admin session. Data is not put in the public demo dataset. Searching/saving does not email or contact any business.
+
+### Reuse the token from Highleads
+
+Highleads stores its token in `/mnt/apps/dockge/data/highleads/compose.yaml` or its adjacent `.env`. The supplied one-time migration script copies **only APIFY_TOKEN** to a mode-0600 import file owned by UID 1000, without printing the token or altering Highleads. It will not overwrite an existing pending import. The new app consumes that file on its next Search settings read/search, encrypts it using the private key and removes the plaintext import file.
+
+After rebuilding the app, download and run the script **on TrueNAS** (the public demo share must not be used to transfer credentials):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/valianktni1/leadwebsite/main/scripts/import-apify-token.py -o /tmp/leadwebsite-import-apify.py
+sudo python3 /tmp/leadwebsite-import-apify.py
+```
+
+Then open **Find UK leads → Search settings → Check connection**. If the script cannot find the existing token, it stops without changes; you can instead enter your existing token directly in Search settings. Never paste it into chat or commit it to GitHub. Back up `settings.json`, `mail.key` and `leads.json` together as private configuration.
+
 ## SMTP settings and sending emails
 
 Inside the dashboard, open **Email settings**. Enter your sender name/email, SMTP host, port, encryption, SMTP username and password. Select **STARTTLS** (normally port 587) or **SSL/TLS** (normally port 465). TLS and certificate checks are required; plaintext SMTP is not supported. Some providers require an app password rather than your normal mailbox password. These transport settings follow the [Nodemailer SMTP documentation](https://nodemailer.com/smtp).
@@ -128,4 +160,4 @@ $env:PUBLIC_URL = 'http://localhost:3000'
 node server.mjs
 ```
 
-Open `http://localhost:3000/admin`. Local demos are stored in `./data` (ignored by Git). `node --test` (or `npm test` when npm is installed) covers first-run setup, concurrent setup protection, login/logout, persistence, password hashing, encrypted SMTP settings, email transport behaviour, demo seeding, uploads, redirects, assets and file boundaries. SMTP tests use a fake mail transport; a real test email must be sent using your own settings after deployment. Docker/TrueNAS deployment must be validated on the destination host.
+Open `http://localhost:3000/admin`. Local demos are stored in `./data` (ignored by Git). `node --test` (or `npm test` when npm is installed) covers first-run setup, concurrent setup protection, login/logout, persistence, password hashing, encrypted SMTP settings, email transport behaviour, demo seeding, uploads, redirects, assets and file boundaries. Lead-search tests use fake Apify responses and do not spend credits. SMTP tests use a fake mail transport; a real test email must be sent using your own settings after deployment. Docker/TrueNAS deployment must be validated on the destination host.

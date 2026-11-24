@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomBytes, createCipheriv, createDecipheriv, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import nodemailer from 'nodemailer';
+import { createApifyClient, tokenOK } from './lib/apify.mjs';
 
 const scrypt = promisify(scryptCallback);
 export class RequestError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -15,7 +16,7 @@ export async function readJSON(req, max = 100_000) {
   catch { throw new RequestError(400, 'Invalid request data.'); }
 }
 
-export async function createAccountStore({ configDir, publicURL, mailTransport, demoExists }) {
+export async function createAccountStore({ configDir, publicURL, mailTransport, demoExists, apifyToken, apifyClient=createApifyClient() }) {
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
   const statePath = path.join(configDir, 'settings.json'), keyPath = path.join(configDir, 'mail.key');
   let state = {};
@@ -27,13 +28,25 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
   }
   if (key.length !== 32) throw new Error('Invalid mail encryption key. Restore the config backup.');
   const sessions = new Map(), attempts = new Map(); let settingUp = false;
-  async function save(next) {
-    const temp = `${statePath}.${randomBytes(8).toString('hex')}.tmp`;
-    try { await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600, flag: 'wx' }); await fs.rename(temp, statePath); state = next; }
-    finally { await fs.rm(temp, { force: true }); }
+  let pendingStateSave=Promise.resolve();
+  async function save(patch) {
+    const operation=pendingStateSave.catch(()=>{}).then(async()=>{
+      const next={...state,...patch},temp = `${statePath}.${randomBytes(8).toString('hex')}.tmp`;
+      try { await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600, flag: 'wx' }); await fs.rename(temp, statePath); state = next; }
+      finally { await fs.rm(temp, { force: true }); }
+    });pendingStateSave=operation;return operation;
   }
   function encrypt(value) { const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv); const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]); return { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), value: encrypted.toString('base64') }; }
   function decrypt(secret) { const cipher = createDecipheriv('aes-256-gcm', key, Buffer.from(secret.iv, 'base64')); cipher.setAuthTag(Buffer.from(secret.tag, 'base64')); return Buffer.concat([cipher.update(Buffer.from(secret.value, 'base64')), cipher.final()]).toString('utf8'); }
+  let tokenImport=null;
+  async function consumeTokenImport() {
+    const filename=path.join(configDir,'apify-token.import');
+    let token;try{token=(await fs.readFile(filename,'utf8')).trim();}catch(e){if(e.code==='ENOENT')return;throw e;}
+    if(!tokenOK(token))throw new RequestError(400,'The Apify import file does not contain a valid token.');
+    await save({search:{secret:encrypt(token)}});await fs.unlink(filename);
+  }
+  async function importToken(){if(!tokenImport)tokenImport=consumeTokenImport().finally(()=>{tokenImport=null;});return tokenImport;}
+  async function getApifyToken(){await importToken();return state.search?.secret?decrypt(state.search.secret):(apifyToken||process.env.APIFY_TOKEN||'').trim();}
   const tokenHash = value => createHash('sha256').update(value).digest('hex');
   function token(req) { return /(?:^|;\s*)ivory_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '')?.[1]; }
   function cookie(res, value, age = 43200) { res.setHeader('Set-Cookie', `ivory_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${publicURL.startsWith('https:') ? '; Secure' : ''}`); }
@@ -55,7 +68,7 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
     return (mailTransport || nodemailer.createTransport)({ host: settings.host, port: settings.port, secure: settings.security === 'tls', requireTLS: settings.security === 'starttls', auth: { user: settings.username, pass: decrypt(settings.secret) }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000, dnsTimeout: 15000, disableFileAccess: true, disableUrlAccess: true, logger: false, debug: false });
   }
   return {
-    hasAccount: () => Boolean(state.admin), authenticated,
+    hasAccount: () => Boolean(state.admin), authenticated, getApifyToken,
     async handle(req, res, pathname, json) {
       if (pathname === '/api/auth/status' && req.method === 'GET') { json(res, 200, { needsSetup: !state.admin, authenticated: authenticated(req), email: authenticated(req) ? state.admin.email : undefined }); return true; }
       if (pathname === '/api/auth/setup' && req.method === 'POST') {
@@ -66,7 +79,7 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
         settingUp = true;
         try {
           const salt = randomBytes(32).toString('hex'), hash = (await scrypt(body.password, salt, 64)).toString('hex');
-          await save({ ...state, admin: { email: body.email.trim().toLowerCase(), salt, hash } }); login(res); json(res, 201, { ok: true });
+          await save({ admin: { email: body.email.trim().toLowerCase(), salt, hash } }); login(res); json(res, 201, { ok: true });
         } finally { settingUp = false; }
         return true;
       }
@@ -79,6 +92,16 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
       }
       if (pathname === '/api/auth/logout' && req.method === 'POST') { const value = token(req); if (value) sessions.delete(tokenHash(value)); cookie(res, '', 0); json(res, 200, { ok: true }); return true; }
       if (!authenticated(req)) return false;
+      if(pathname==='/api/settings/search'&&req.method==='GET'){
+        const token=await getApifyToken();json(res,200,{configured:tokenOK(token),source:state.search?.secret?'saved':tokenOK(token)?'environment':'none',provider:'Apify',actor:'compass/crawler-google-places'});return true;
+      }
+      if(pathname==='/api/settings/search'&&req.method==='POST'){
+        const body=await readJSON(req);if(!tokenOK(body.token))throw new RequestError(400,'Enter a valid Apify token.');
+        await save({search:{secret:encrypt(body.token)}});json(res,200,{ok:true,configured:true});return true;
+      }
+      if(pathname==='/api/settings/search/test'&&req.method==='POST'){
+        await readJSON(req);const token=await getApifyToken();await apifyClient.verify(token);json(res,200,{ok:true,message:'Apify connection verified. No search was started.'});return true;
+      }
       if (pathname === '/api/settings/smtp' && req.method === 'GET') {
         const { secret, ...settings } = state.smtp || {};
         json(res, 200, { ...settings, passwordSaved: Boolean(secret), adminEmail: state.admin.email }); return true;
@@ -88,7 +111,7 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
         if (typeof body.host !== 'string' || !/^[a-zA-Z0-9.-]{1,253}$/.test(body.host) || !Number.isInteger(body.port) || body.port < 1 || body.port > 65535 || !['tls', 'starttls'].includes(body.security) || !emailOK(body.fromEmail) || typeof body.fromName !== 'string' || body.fromName.length > 120 || /[\r\n]/.test(body.fromName) || typeof body.username !== 'string' || !body.username.trim() || body.username.length > 254 || /[\r\n]/.test(body.username) || (body.password !== undefined && (typeof body.password !== 'string' || body.password.length > 2048))) throw new RequestError(400, 'Check your SMTP server, port, sender email and login details.');
         const changedIdentity = state.smtp && (body.host !== state.smtp.host || body.username !== state.smtp.username);
         if ((!state.smtp?.secret || changedIdentity) && !body.password) throw new RequestError(400, 'Enter the SMTP password for this mail server and username.');
-        await save({ ...state, smtp: { host: body.host, port: body.port, security: body.security, fromEmail: body.fromEmail.trim(), fromName: body.fromName.trim(), username: body.username.trim(), secret: body.password ? encrypt(body.password) : state.smtp.secret } });
+        await save({ smtp: { host: body.host, port: body.port, security: body.security, fromEmail: body.fromEmail.trim(), fromName: body.fromName.trim(), username: body.username.trim(), secret: body.password ? encrypt(body.password) : state.smtp.secret } });
         json(res, 200, { ok: true, fromEmail: state.smtp.fromEmail }); return true;
       }
       if (['/api/email/test', '/api/email/send'].includes(pathname) && req.method === 'POST') {
