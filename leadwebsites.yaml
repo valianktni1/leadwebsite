@@ -1,0 +1,24 @@
+name: leadwebsites
+services:
+  leadwebsites:
+    container_name: leadwebsites
+    build:
+      context: /mnt/apps/leadwebsite
+    restart: unless-stopped
+    ports:
+      - "30065:3000"
+    environment:
+      PUBLIC_URL: https://websites.ivorydigital.uk
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the Dockge environment}
+      DATA_DIR: /data
+      PORT: "3000"
+    volumes:
+      - /mnt/photographers_data/leadwebsitedemos:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
