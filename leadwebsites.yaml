@@ -3,7 +3,7 @@ services:
   leadwebsites:
     container_name: leadwebsites
     build:
-      context: /mnt/apps/leadwebsite
+      context: "https://github.com/valianktni1/leadwebsite.git#main"
     restart: unless-stopped
     ports:
       - "30065:3000"
