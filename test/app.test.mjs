@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createApp } from '../server.mjs';
+import nodemailer from 'nodemailer';
 
 const email = 'owner@example.com', password = 'test-password-unique-123';
 async function fixture(t, options = {}) {
@@ -119,6 +120,35 @@ test('encrypted SMTP settings, password retention, test and demo messages, deliv
   assert.equal((await f.api('/api/email/test', {})).status, 200);
   assert.equal(calls.at(-1).settings.auth.pass, settings.password);
   fail = true; const failure = await f.api('/api/email/test', {}); assert.equal(failure.status, 502); assert.equal((await failure.text()).includes('Sensitive'), false);
+});
+
+test('saved sales sender reaches actual MIME headers and envelope for both send routes', async t => {
+  const deliveries = [];
+  const f = await fixture(t, { mailTransport: settings => {
+    const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
+    return { async sendMail(message) { const result = await transport.sendMail(message); deliveries.push({ settings, result }); return result; } };
+  } });
+  await f.setup();
+  const smtp = { host: 'smtp.hostinger.com', port: 465, security: 'tls', fromName: 'Ivory Digital', fromEmail: 'email@ivorydigital.uk', username: 'sales@ivorydigital.uk', password: 'test-mailbox-password' };
+  assert.equal((await f.api('/api/settings/smtp', smtp)).status, 200);
+  const saved = await f.api('/api/settings/smtp', { ...smtp, fromEmail: 'sales@ivorydigital.uk', password: '' });
+  assert.equal((await saved.json()).fromEmail, 'sales@ivorydigital.uk');
+  await f.restart(); await f.api('/api/auth/login', { email, password });
+  const tested = await f.api('/api/email/test', {}); assert.equal(tested.status, 200);
+  const receipt = await tested.json(); assert.equal(receipt.fromEmail, 'sales@ivorydigital.uk'); assert.ok(receipt.messageId);
+  assert.match(receipt.message, /Email from sales@ivorydigital.uk accepted by smtp.hostinger.com/);
+  await fs.mkdir(path.join(f.data, 'company')); await fs.writeFile(path.join(f.data, 'company/index.html'), '<h1>Company</h1>');
+  assert.equal((await f.api('/api/email/send', { to: 'lead@example.com', subject: 'Your demo', message: 'Take a look.', slug: 'company' })).status, 200);
+  for (const { settings, result } of deliveries) {
+    assert.equal(settings.auth.user, 'sales@ivorydigital.uk'); assert.equal(settings.secure, true);
+    assert.equal(result.envelope.from, 'sales@ivorydigital.uk');
+    const mime = result.message.toString();
+    assert.match(mime, /^From: Ivory Digital <sales@ivorydigital.uk>\r?$/m);
+    assert.match(mime, /^Reply-To: Ivory Digital <sales@ivorydigital.uk>\r?$/m);
+    assert.match(mime, /^X-Ivory-Digital-App: leadwebsite\r?$/m);
+    assert.equal(mime.includes('email@ivorydigital.uk'), false);
+  }
+  assert.deepEqual(deliveries.map(d => d.result.envelope.to), [[email], ['lead@example.com']]);
 });
 
 test('bundled demos seed once and never overwrite dataset edits', async t => {

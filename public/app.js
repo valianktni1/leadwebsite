@@ -50,11 +50,17 @@ function render() {
       try { await navigator.clipboard.writeText(demo.url); copy.textContent = 'Copied!'; setTimeout(() => copy.textContent = 'Copy link', 2000); }
       catch { showNotice(`Copy this link: ${demo.url}`); }
     };
-    const email = element('button', 'button light email-demo', 'Send by email'); email.onclick = () => {
+    const email = element('button', 'button light email-demo', 'Send by email'); email.onclick = async () => {
       emailDemo = demo; $('email-form').reset(); $('email-error').hidden = true;
       $('email-subject').value = `A website idea for ${demo.name}`;
       $('email-message').value = `Hi,\n\nI’ve put together a website concept for ${demo.name} and thought you might like to take a look.\n\nI’d love to hear what you think.\n\nIvory Digital`;
-      $('email-link').textContent = demo.url; $('email-dialog').showModal();
+      $('email-link').textContent = demo.url;
+      $('email-sender').textContent = 'Loading your saved sender…'; $('send-email').disabled = true; $('email-dialog').showModal();
+      try {
+        const settings = await request('/api/settings/smtp');
+        $('email-sender').textContent = settings.passwordSaved ? `Sending from: ${settings.fromEmail}` : 'Save your SMTP settings using Email settings before sending.';
+        $('send-email').disabled = !settings.passwordSaved;
+      } catch (error) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
     };
     actions.append(preview, copy); body.append(actions, email); card.append(art, body); grid.append(card);
   }
@@ -94,7 +100,7 @@ $('email-settings').onclick = async () => {
     $('smtp-user').value = settings.username || ''; $('smtp-password').value = ''; $('smtp-password').required = !settings.passwordSaved;
     $('smtp-password-help').textContent = settings.passwordSaved ? 'Password saved securely. Leave blank to keep it, or enter a replacement.' : 'Your password is encrypted before it is saved.';
     $('test-recipient').textContent = `The test email will go to your admin address: ${settings.adminEmail}`;
-    $('smtp-status').textContent = settings.passwordSaved ? 'Settings saved. You can send a test email below.' : 'Save your settings before sending a test email.';
+    $('smtp-status').textContent = settings.passwordSaved ? `Saved sender: ${settings.fromEmail}. Test emails and demo emails will use this address.` : 'Save your settings before sending a test email.';
     $('save-smtp').disabled = false; $('test-smtp').disabled = !settings.passwordSaved;
   } catch (error) { $('smtp-error').textContent = error.message; $('smtp-error').hidden = false; }
 };
@@ -103,10 +109,10 @@ $('smtp-security').onchange = () => { $('smtp-port').value = $('smtp-security').
 $('smtp-form').onsubmit = async event => {
   event.preventDefault(); $('smtp-error').hidden = true; $('save-smtp').disabled = true;
   try {
-    await request('/api/settings/smtp', { host: $('smtp-host').value.trim(), port: Number($('smtp-port').value), security: $('smtp-security').value, fromName: $('smtp-name').value, fromEmail: $('smtp-email').value.trim(), username: $('smtp-user').value.trim(), password: $('smtp-password').value });
+    const saved = await request('/api/settings/smtp', { host: $('smtp-host').value.trim(), port: Number($('smtp-port').value), security: $('smtp-security').value, fromName: $('smtp-name').value, fromEmail: $('smtp-email').value.trim(), username: $('smtp-user').value.trim(), password: $('smtp-password').value });
     $('smtp-password').value = ''; $('smtp-password').required = false;
     $('smtp-password-help').textContent = 'Password saved securely. Leave blank to keep it, or enter a replacement.';
-    $('smtp-status').textContent = 'Email settings saved.'; $('test-smtp').disabled = false;
+    $('smtp-status').textContent = `Email settings saved. Sending from: ${saved.fromEmail}`; $('test-smtp').disabled = false;
   } catch (error) { $('smtp-error').textContent = error.message; $('smtp-error').hidden = false; }
   finally { $('save-smtp').disabled = false; }
 };

@@ -50,8 +50,7 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
     const item = attempts.get(ip) || { count: 0, until: now + 900_000 }; item.count++; attempts.set(ip, item);
     if (item.count > 15) throw new RequestError(429, 'Too many sign-in attempts. Try again in 15 minutes.');
   }
-  async function smtp() {
-    const settings = state.smtp;
+  function smtp(settings) {
     if (!settings) throw new RequestError(400, 'Save your SMTP settings first.');
     return (mailTransport || nodemailer.createTransport)({ host: settings.host, port: settings.port, secure: settings.security === 'tls', requireTLS: settings.security === 'starttls', auth: { user: settings.username, pass: decrypt(settings.secret) }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000, dnsTimeout: 15000, disableFileAccess: true, disableUrlAccess: true, logger: false, debug: false });
   }
@@ -90,22 +89,32 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
         const changedIdentity = state.smtp && (body.host !== state.smtp.host || body.username !== state.smtp.username);
         if ((!state.smtp?.secret || changedIdentity) && !body.password) throw new RequestError(400, 'Enter the SMTP password for this mail server and username.');
         await save({ ...state, smtp: { host: body.host, port: body.port, security: body.security, fromEmail: body.fromEmail.trim(), fromName: body.fromName.trim(), username: body.username.trim(), secret: body.password ? encrypt(body.password) : state.smtp.secret } });
-        json(res, 200, { ok: true }); return true;
+        json(res, 200, { ok: true, fromEmail: state.smtp.fromEmail }); return true;
       }
       if (['/api/email/test', '/api/email/send'].includes(pathname) && req.method === 'POST') {
         const body = await readJSON(req);
+        // Keep credentials and message identity together even if settings change mid-send.
+        const settings = state.smtp;
+        if (!settings) throw new RequestError(400, 'Save your SMTP settings first.');
         let to, subject, text;
-        if (pathname.endsWith('/test')) { to = state.admin.email; subject = 'Your Ivory Digital email settings are working'; text = 'This test email was sent by your website demo studio using your saved SMTP settings.'; }
+        if (pathname.endsWith('/test')) { to = state.admin.email; subject = 'Your Ivory Digital email settings are working'; text = `This test email was sent by your website demo studio.\n\nSender: ${settings.fromEmail}\nSMTP server: ${settings.host}\nWebsite: ${publicURL}\n\nThe visible From, Reply-To and SMTP envelope sender are set to the sender address above.`; }
         else {
           if (!emailOK(body.to) || typeof body.subject !== 'string' || !body.subject.trim() || body.subject.length > 200 || /[\r\n]/.test(body.subject) || typeof body.message !== 'string' || !body.message.trim() || body.message.length > 20000 || typeof body.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(body.slug)) throw new RequestError(400, 'Enter one recipient, a subject and a message.');
           if (!await demoExists(body.slug)) throw new RequestError(404, 'This demo is no longer available.');
           to = body.to; subject = body.subject; text = `${body.message.trim()}\n\nView your website demo: ${publicURL}/${body.slug}/`;
         }
-        const transport = await smtp();
+        const transport = smtp(settings);
         try {
-          const result = await transport.sendMail({ from: { name: state.smtp.fromName, address: state.smtp.fromEmail }, to: { address: to }, subject, text });
+          const sender = { name: settings.fromName, address: settings.fromEmail };
+          const result = await transport.sendMail({
+            from: sender,
+            replyTo: sender,
+            envelope: { from: settings.fromEmail, to: [to] },
+            to: { address: to }, subject, text,
+            headers: { 'X-Ivory-Digital-App': 'leadwebsite' }
+          });
           if (result.rejected?.length) throw new Error('Recipient rejected');
-          json(res, 200, { ok: true, message: `Email accepted by your mail server for ${to}.` });
+          json(res, 200, { ok: true, fromEmail: settings.fromEmail, messageId: result.messageId, message: `Email from ${settings.fromEmail} accepted by ${settings.host} for ${to}.${result.messageId ? ` Message ID: ${result.messageId}` : ''}` });
         } catch { throw new RequestError(502, 'The mail server could not send this email. Check the saved SMTP credentials, sender address and TLS settings.'); }
         finally { transport.close?.(); }
         return true;
