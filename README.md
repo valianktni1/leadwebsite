@@ -90,7 +90,7 @@ Save prospects to a shortlist, add notes and mark them New, Contacted, Demo crea
 
 ### Reuse the token from Highleads
 
-Highleads stores its token in `/mnt/apps/dockge/data/highleads/compose.yaml` or its adjacent `.env`. The supplied one-time migration script copies **only APIFY_TOKEN** to a mode-0600 import file owned by UID 1000, without printing the token or altering Highleads. It will not overwrite an existing pending import. The new app consumes that file on its next Search settings read/search, encrypts it using the private key and removes the plaintext import file.
+The importer first checks the known Highleads container environment, then `/mnt/apps/dockge/data/highleads/compose.yaml` and its adjacent `.env`. It recognises APIFY_TOKEN, APIFY_API_TOKEN, APIFY_API_KEY and APIFY_KEY. The supplied one-time migration script copies **only the Apify token** to a mode-0600 import file owned by UID 1000, without printing the token or altering Highleads. It will not overwrite an existing pending import. The new app consumes that file on its next Search settings read/search, encrypts it using the private key and removes the plaintext import file.
 
 After rebuilding the app, download and run the script **on TrueNAS** (the public demo share must not be used to transfer credentials):
 
