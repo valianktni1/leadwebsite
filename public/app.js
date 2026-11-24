@@ -1,5 +1,11 @@
 const $ = id => document.getElementById(id);
 let demos = [], selected = [], publicURL = 'https://websites.ivorydigital.uk', editedSlug = false;
+let emailDemo = null;
+async function request(url, body) {
+  const response = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (response.status === 401) { location.replace('/admin'); throw new Error('Please sign in again.'); }
+  const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to complete your request.'); return result;
+}
 const slugify = name => name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80).replace(/-$/, '');
 function showNotice(message) { $('notice').textContent = message; $('notice').hidden = false; }
 function openUpload() { $('upload-dialog').showModal(); }
@@ -44,13 +50,18 @@ function render() {
       try { await navigator.clipboard.writeText(demo.url); copy.textContent = 'Copied!'; setTimeout(() => copy.textContent = 'Copy link', 2000); }
       catch { showNotice(`Copy this link: ${demo.url}`); }
     };
-    actions.append(preview, copy); body.append(actions); card.append(art, body); grid.append(card);
+    const email = element('button', 'button light email-demo', 'Send by email'); email.onclick = () => {
+      emailDemo = demo; $('email-form').reset(); $('email-error').hidden = true;
+      $('email-subject').value = `A website idea for ${demo.name}`;
+      $('email-message').value = `Hi,\n\nI’ve put together a website concept for ${demo.name} and thought you might like to take a look.\n\nI’d love to hear what you think.\n\nIvory Digital`;
+      $('email-link').textContent = demo.url; $('email-dialog').showModal();
+    };
+    actions.append(preview, copy); body.append(actions, email); card.append(art, body); grid.append(card);
   }
 }
 async function load() {
   try {
-    const response = await fetch('/api/demos'); if (!response.ok) throw new Error('Could not load demos. Refresh and sign in again.');
-    const data = await response.json(); demos = data.demos; publicURL = data.publicURL; updateURL(); render();
+    const data = await request('/api/demos'); demos = data.demos; publicURL = data.publicURL; updateURL(); render();
   } catch (e) { showNotice(e.message); }
 }
 const encodeFile = file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('Unable to read a selected file.')); reader.onload = () => resolve(reader.result.split(',')[1]); reader.readAsDataURL(file); });
@@ -69,5 +80,48 @@ $('upload-form').onsubmit = async event => {
     showNotice(`Demo published. Ready to share: ${result.url}`); await load();
   } catch (error) { $('upload-error').textContent = error.message; $('upload-error').hidden = false; }
   finally { button.disabled = false; button.textContent = 'Publish demo'; }
+};
+$('logout').onclick = async () => { try { await request('/api/auth/logout', {}); location.replace('/admin'); } catch (error) { showNotice(error.message); } };
+$('close-smtp').onclick = () => $('smtp-dialog').close();
+$('close-email').onclick = () => $('email-dialog').close();
+$('email-settings').onclick = async () => {
+  $('smtp-dialog').showModal(); $('smtp-error').hidden = true; $('smtp-status').textContent = 'Loading settings…';
+  $('save-smtp').disabled = true; $('test-smtp').disabled = true;
+  try {
+    const settings = await request('/api/settings/smtp');
+    $('smtp-name').value = settings.fromName || 'Ivory Digital'; $('smtp-email').value = settings.fromEmail || settings.adminEmail;
+    $('smtp-host').value = settings.host || ''; $('smtp-port').value = settings.port || 587; $('smtp-security').value = settings.security || 'starttls';
+    $('smtp-user').value = settings.username || ''; $('smtp-password').value = ''; $('smtp-password').required = !settings.passwordSaved;
+    $('smtp-password-help').textContent = settings.passwordSaved ? 'Password saved securely. Leave blank to keep it, or enter a replacement.' : 'Your password is encrypted before it is saved.';
+    $('test-recipient').textContent = `The test email will go to your admin address: ${settings.adminEmail}`;
+    $('smtp-status').textContent = settings.passwordSaved ? 'Settings saved. You can send a test email below.' : 'Save your settings before sending a test email.';
+    $('save-smtp').disabled = false; $('test-smtp').disabled = !settings.passwordSaved;
+  } catch (error) { $('smtp-error').textContent = error.message; $('smtp-error').hidden = false; }
+};
+for (const input of $('smtp-form').querySelectorAll('input,select')) input.addEventListener('input', () => { $('test-smtp').disabled = true; $('smtp-status').textContent = 'Save your changes before sending a test email.'; });
+$('smtp-security').onchange = () => { $('smtp-port').value = $('smtp-security').value === 'tls' ? 465 : 587; };
+$('smtp-form').onsubmit = async event => {
+  event.preventDefault(); $('smtp-error').hidden = true; $('save-smtp').disabled = true;
+  try {
+    await request('/api/settings/smtp', { host: $('smtp-host').value.trim(), port: Number($('smtp-port').value), security: $('smtp-security').value, fromName: $('smtp-name').value, fromEmail: $('smtp-email').value.trim(), username: $('smtp-user').value.trim(), password: $('smtp-password').value });
+    $('smtp-password').value = ''; $('smtp-password').required = false;
+    $('smtp-password-help').textContent = 'Password saved securely. Leave blank to keep it, or enter a replacement.';
+    $('smtp-status').textContent = 'Email settings saved.'; $('test-smtp').disabled = false;
+  } catch (error) { $('smtp-error').textContent = error.message; $('smtp-error').hidden = false; }
+  finally { $('save-smtp').disabled = false; }
+};
+$('test-smtp').onclick = async () => {
+  $('smtp-error').hidden = true; $('test-smtp').disabled = true; $('save-smtp').disabled = true; $('smtp-status').textContent = 'Sending your test email…';
+  try { const result = await request('/api/email/test', {}); $('smtp-status').textContent = result.message; }
+  catch (error) { $('smtp-status').textContent = ''; $('smtp-error').textContent = error.message; $('smtp-error').hidden = false; }
+  finally { $('test-smtp').disabled = false; $('save-smtp').disabled = false; }
+};
+$('email-form').onsubmit = async event => {
+  event.preventDefault(); if (!emailDemo) return; $('send-email').disabled = true; $('send-email').textContent = 'Sending…'; $('email-error').hidden = true;
+  try {
+    const result = await request('/api/email/send', { slug: emailDemo.slug, to: $('email-to').value.trim(), subject: $('email-subject').value, message: $('email-message').value });
+    $('email-dialog').close(); $('email-form').reset(); showNotice(result.message);
+  } catch (error) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
+  finally { $('send-email').disabled = false; $('send-email').textContent = 'Send email'; }
 };
 load();

@@ -9,12 +9,12 @@ services:
       - "30065:3000"
     environment:
       PUBLIC_URL: https://websites.ivorydigital.uk
-      ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the Dockge environment}
       DATA_DIR: /data
+      CONFIG_DIR: /config
       PORT: "3000"
     volumes:
       - /mnt/photographers_data/leadwebsitedemos:/data
+      - /mnt/apps/leadwebsite/config:/config
     security_opt:
       - no-new-privileges:true
     cap_drop:

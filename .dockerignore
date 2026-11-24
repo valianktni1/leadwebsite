@@ -1,6 +1,7 @@
 .git
 .env
 data
+config
 node_modules
 test
 *.log
