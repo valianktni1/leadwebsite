@@ -116,6 +116,21 @@ test('encrypted SMTP settings, password retention, test and demo messages, deliv
   assert.equal((await f.api('/api/email/send', { ...message, to: 'a@example.com,b@example.com' })).status, 400);
   assert.equal((await f.api('/api/email/send', { ...message, subject: 'Subject\r\nBcc: x@example.com' })).status, 400);
   assert.equal((await f.api('/api/email/send', { ...message, slug: 'missing' })).status, 404);
+  await fs.mkdir(path.join(f.data, 'studio'));
+  await fs.writeFile(path.join(f.data, 'studio/index.html'), '<h1>Studio</h1>');
+  const draft = { to: message.to, subject: message.subject, message: 'Edited introduction.' };
+  for (const slugs of [[], ['studio'], ['studio', 'company']]) {
+    assert.equal((await f.api('/api/email/send', { ...draft, slugs })).status, 200);
+    const sent = calls.at(-1).message;
+    assert.ok(sent.text.startsWith(draft.message));
+    assert.deepEqual(sent.text.match(/https:\/\/[^\s]+/g) || [], slugs.map(slug => `https://websites.ivorydigital.uk/${slug}/`));
+  }
+  const before = calls.length;
+  for (const slugs of [['studio', 'studio'], ['studio', 'company', 'third'], 'studio']) {
+    assert.equal((await f.api('/api/email/send', { ...draft, slugs })).status, 400);
+  }
+  assert.equal((await f.api('/api/email/send', { ...draft, slugs: ['studio', 'missing'] })).status, 404);
+  assert.equal(calls.length, before);
   await f.restart(); await f.api('/api/auth/login', { email, password });
   assert.equal((await f.api('/api/email/test', {})).status, 200);
   assert.equal(calls.at(-1).settings.auth.pass, settings.password);

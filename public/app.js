@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 let demos = [], selected = [], publicURL = 'https://websites.ivorydigital.uk', editedSlug = false;
-let emailDemo = null;
+let composerVersion = 0;
 async function request(url, body) {
   const response = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (response.status === 401) { location.replace('/admin'); throw new Error('Please sign in again.'); }
@@ -50,19 +50,58 @@ function render() {
       try { await navigator.clipboard.writeText(demo.url); copy.textContent = 'Copied!'; setTimeout(() => copy.textContent = 'Copy link', 2000); }
       catch { showNotice(`Copy this link: ${demo.url}`); }
     };
-    const email = element('button', 'button light email-demo', 'Send by email'); email.onclick = async () => {
-      emailDemo = demo; $('email-form').reset(); $('email-error').hidden = true;
-      $('email-subject').value = `A website idea for ${demo.name}`;
-      $('email-message').value = `Hi,\n\nI’ve put together a website concept for ${demo.name} and thought you might like to take a look.\n\nI’d love to hear what you think.\n\nIvory Digital`;
-      $('email-link').textContent = demo.url;
-      $('email-sender').textContent = 'Loading your saved sender…'; $('send-email').disabled = true; $('email-dialog').showModal();
-      try {
-        const settings = await request('/api/settings/smtp');
-        $('email-sender').textContent = settings.passwordSaved ? `Sending from: ${settings.fromEmail}` : 'Save your SMTP settings using Email settings before sending.';
-        $('send-email').disabled = !settings.passwordSaved;
-      } catch (error) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
-    };
+    const email = element('button', 'button light email-demo', 'Send by email'); email.onclick = () => openEmailComposer({ demo });
     actions.append(preview, copy); body.append(actions, email); card.append(art, body); grid.append(card);
+  }
+}
+const demoSelectors = [$('demo-first'), $('demo-second')];
+function selectedDemoSlugs() {
+  return demoSelectors.map(select => select.value).filter(Boolean);
+}
+function updateEmailLinks() {
+  const selected = selectedDemoSlugs();
+  for (const select of demoSelectors) {
+    for (const option of select.options) {
+      option.disabled = Boolean(option.value && selected.includes(option.value) && option.value !== select.value);
+    }
+  }
+  const preview = $('email-links');
+  preview.replaceChildren();
+  if (selected.length) preview.append('Included below your message');
+  for (const slug of selected) preview.append(element('p', 'email-preview', demos.find(demo => demo.slug === slug).url));
+}
+for (const select of demoSelectors) select.onchange = updateEmailLinks;
+async function openEmailComposer({ lead, demo }) {
+  const version = ++composerVersion;
+  const company = lead?.name || demo.name;
+  $('email-form').reset();
+  $('email-error').hidden = true;
+  $('email-title').textContent = lead ? `Email ${company}` : 'Share this demo by email';
+  $('email-to').value = lead?.email || '';
+  $('email-subject').value = `A website idea for ${company}`.slice(0, 200);
+  $('email-message').value = lead
+    ? `Hi ${company} team,\n\nI came across your business on Google Maps and wanted to introduce myself. I’m Mark from Ivory Digital. I design websites that make it easy for local customers to see what you offer and get in touch.\n\nWould you be interested in seeing how a site could look for ${company}? I’d be happy to put a few ideas together.\n\nBest wishes,\nMark\nIvory Digital`
+    : `Hi,\n\nI’ve put together a website concept for ${company} and thought you might like to take a look.\n\nI’d love to hear what you think.\n\nIvory Digital`;
+  $('email-links').replaceChildren();
+  for (const select of demoSelectors) { select.replaceChildren(new Option('Loading collection…', '')); select.disabled = true; }
+  $('email-sender').textContent = 'Loading your saved sender…';
+  $('send-email').disabled = true;
+  $('email-dialog').showModal();
+  try {
+    const [settings, collection] = await Promise.all([request('/api/settings/smtp'), request('/api/demos')]);
+    if (version !== composerVersion) return;
+    demos = collection.demos;
+    for (const select of demoSelectors) {
+      select.replaceChildren(new Option('No website link', ''));
+      for (const item of demos) select.add(new Option(item.name, item.slug));
+      select.disabled = !demos.length;
+    }
+    if (demo) $('demo-first').value = demo.slug;
+    updateEmailLinks();
+    $('email-sender').textContent = settings.passwordSaved ? `Sending from ${settings.fromEmail}` : 'Save your SMTP settings using Email settings before sending.';
+    $('send-email').disabled = !settings.passwordSaved;
+  } catch (error) {
+    if (version === composerVersion) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
   }
 }
 async function load() {
@@ -89,6 +128,7 @@ $('upload-form').onsubmit = async event => {
 };
 $('logout').onclick = async () => { try { await request('/api/auth/logout', {}); location.replace('/admin'); } catch (error) { showNotice(error.message); } };
 $('close-smtp').onclick = () => $('smtp-dialog').close();
+$('email-dialog').oncancel = event => { if ($('close-email').disabled) event.preventDefault(); };
 $('close-email').onclick = () => $('email-dialog').close();
 $('email-settings').onclick = async () => {
   $('smtp-dialog').showModal(); $('smtp-error').hidden = true; $('smtp-status').textContent = 'Loading settings…';
@@ -123,11 +163,11 @@ $('test-smtp').onclick = async () => {
   finally { $('test-smtp').disabled = false; $('save-smtp').disabled = false; }
 };
 $('email-form').onsubmit = async event => {
-  event.preventDefault(); if (!emailDemo) return; $('send-email').disabled = true; $('send-email').textContent = 'Sending…'; $('email-error').hidden = true;
+  event.preventDefault(); if ($('send-email').disabled) return; $('close-email').disabled = true; $('send-email').disabled = true; $('send-email').textContent = 'Sending…'; $('email-error').hidden = true;
   try {
-    const result = await request('/api/email/send', { slug: emailDemo.slug, to: $('email-to').value.trim(), subject: $('email-subject').value, message: $('email-message').value });
+    const result = await request('/api/email/send', { slugs: selectedDemoSlugs(), to: $('email-to').value.trim(), subject: $('email-subject').value, message: $('email-message').value });
     $('email-dialog').close(); $('email-form').reset(); showNotice(result.message);
   } catch (error) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
-  finally { $('send-email').disabled = false; $('send-email').textContent = 'Send email'; }
+  finally { $('close-email').disabled = false; $('send-email').disabled = false; $('send-email').textContent = 'Send email'; }
 };
 load();

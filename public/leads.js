@@ -35,6 +35,9 @@
     if(lead.rating!==null)card.append(node('p','help',`${lead.rating} / 5 · ${lead.reviewsCount??0} Google reviews`));
     const evidence=node('ul','lead-evidence');for(const reason of lead.assessment.reasons)evidence.append(node('li','',reason));card.append(evidence);
     const actions=node('div','lead-card-actions');if(lead.mapsURL)actions.append(external('View on Maps',lead.mapsURL));if(lead.website)actions.append(external('Visit website',lead.website));
+    const emailButton=node('button','button dark','Email lead');
+    emailButton.onclick=()=>openEmailComposer({lead});
+    actions.prepend(emailButton);
     if(saved){const notes=node('button','button dark','Notes & status');notes.onclick=()=>{state.notesId=lead.id;$('notes-company').textContent=lead.name;$('notes-status').value=lead.status;$('notes-text').value=lead.notes;error('notes-error','');$('lead-notes-dialog').showModal();};actions.append(notes);if(lead.notes)card.append(node('p','lead-notes',lead.notes));}
     else {const exists=state.saved.some(item=>item.id===lead.id),save=node('button','button dark',exists?'Saved':'Save lead');save.disabled=exists;save.onclick=async()=>{save.disabled=true;try{await api('/api/leads/saved',{searchId:state.job.id,resultId:lead.id});await loadSaved();}catch(e){save.disabled=false;error('lead-error',e.message);}};actions.append(save);}
     card.append(actions,node('p','lead-checked',`Checked ${new Date(lead.checkedAt).toLocaleString('en-GB')}`));return card;

@@ -123,9 +123,19 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
         let to, subject, text;
         if (pathname.endsWith('/test')) { to = state.admin.email; subject = 'Your Ivory Digital email settings are working'; text = `This test email was sent by your website demo studio.\n\nSender: ${settings.fromEmail}\nSMTP server: ${settings.host}\nWebsite: ${publicURL}\n\nThe visible From, Reply-To and SMTP envelope sender are set to the sender address above.`; }
         else {
-          if (!emailOK(body.to) || typeof body.subject !== 'string' || !body.subject.trim() || body.subject.length > 200 || /[\r\n]/.test(body.subject) || typeof body.message !== 'string' || !body.message.trim() || body.message.length > 20000 || typeof body.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(body.slug)) throw new RequestError(400, 'Enter one recipient, a subject and a message.');
-          if (!await demoExists(body.slug)) throw new RequestError(404, 'This demo is no longer available.');
-          to = body.to; subject = body.subject; text = `${body.message.trim()}\n\nView your website demo: ${publicURL}/${body.slug}/`;
+          if (!emailOK(body.to) || typeof body.subject !== 'string' || !body.subject.trim() || body.subject.length > 200 || /[\r\n]/.test(body.subject) || typeof body.message !== 'string' || !body.message.trim() || body.message.length > 20000) throw new RequestError(400, 'Enter one recipient, a subject and a message.');
+          const slugs = body.slugs === undefined ? [body.slug] : body.slugs;
+          if (!Array.isArray(slugs) || slugs.length > 2 || new Set(slugs).size !== slugs.length ||
+              slugs.some(slug => typeof slug !== 'string' || slug.length > 80 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))) {
+            throw new RequestError(400, 'Choose up to two different demos from your collection.');
+          }
+          const links = [];
+          for (const slug of slugs) {
+            if (!await demoExists(slug)) throw new RequestError(404, 'A selected demo is no longer available.');
+            links.push(`${publicURL}/${slug}/`);
+          }
+          to = body.to; subject = body.subject; text = body.message.trim();
+          if (links.length) text += `\n\n${links.length === 1 ? 'Website example' : 'Website examples'}:\n${links.join('\n')}`;
         }
         const transport = smtp(settings);
         let receipt, archive;
