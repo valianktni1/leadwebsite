@@ -1,3 +1,4 @@
+import { designQueue } from './lib/design-queue.mjs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,9 +22,11 @@ export async function createApp(options = {}) {
   const dataReal = await fs.realpath(data);
   const configDir = path.resolve(options.configDir || process.env.CONFIG_DIR || './config');
   if (inside(dataReal, configDir)) throw new Error('CONFIG_DIR must be outside the public demo dataset.');
-  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, saveSentCopy: options.saveSentCopy, apifyToken:options.apifyToken, apifyClient:options.apifyClient, demoExists: async slug => {
+  const demoExists = async slug => {
     try { const real = await fs.realpath(path.join(data, slug, 'index.html')); return slugOK(slug) && inside(path.join(dataReal, slug), real); } catch { return false; }
-  } });
+  };
+  const designs = designQueue(configDir, demoExists);
+  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, saveSentCopy: options.saveSentCopy, apifyToken: options.apifyToken, apifyClient: options.apifyClient, demoExists });
   const leads=await createLeadService({configDir,getToken:account.getApifyToken,apify:options.apifyClient,inspect:options.inspectWebsite});
   if (options.seedDir !== false) {
     const seeds = options.seedDir || path.join(ROOT, 'seed-demos');
@@ -61,6 +64,7 @@ export async function createApp(options = {}) {
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
         if (!['GET', 'HEAD'].includes(req.method) && (req.headers['sec-fetch-site'] === 'cross-site' || ![publicURL, `http://${req.headers.host}`].includes(req.headers.origin))) throw new RequestError(403, 'Use the dashboard to make changes.');
+        if (await designs(req, res, pathname, json, account.authenticated(req))) return;
         if (await account.handle(req, res, pathname, json)) return;
         if (pathname === '/admin' || pathname === '/admin/') return serve(res, path.join(ROOT, 'public', account.authenticated(req) ? 'admin.html' : 'auth.html'));
         if (['/admin/app.js', '/admin/style.css', '/admin/auth.js', '/admin/leads.js', '/admin/leads.css'].includes(pathname)) return serve(res, path.join(ROOT, 'public', path.basename(pathname)));

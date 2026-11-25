@@ -171,3 +171,56 @@ $('email-form').onsubmit = async event => {
   finally { $('close-email').disabled = false; $('send-email').disabled = false; $('send-email').textContent = 'Send email'; }
 };
 load();
+
+let designLead, designId, designBusy = false;
+async function refreshDesignJobs() {
+  const { jobs } = await request('/api/designs');
+  $('design-jobs').replaceChildren(...jobs.map(job => {
+    const item = element('li', '', job.company + ' — ' + job.status);
+    if (job.slug) {
+      const link = element('a', '', 'View demo');
+      link.href = '/' + encodeURIComponent(job.slug) + '/';
+      link.target = '_blank'; link.rel = 'noopener';
+      item.append(' · ', link);
+    }
+    return item;
+  }));
+  if (!jobs.length) $('design-jobs').append(element('li', '', 'No requests yet.'));
+}
+async function openDesignBrief(lead = {}) {
+  designLead = lead;
+  const version = designId = crypto.randomUUID();
+  $('design-form').reset();
+  $('design-history').open = false;
+  $('design-company').value = lead.name || '';
+  $('design-source').replaceChildren(new Option('Design a new concept', ''));
+  $('design-feedback').textContent = '';
+  $('design-submit').disabled = true;
+  $('design-dialog').showModal();
+  try {
+    const collection = await request('/api/demos');
+    if (version !== designId) return;
+    for (const demo of collection.demos) $('design-source').add(new Option('Customise a copy of ' + demo.name, demo.slug));
+    $('design-submit').disabled = false;
+  } catch (e) { $('design-feedback').textContent = e.message; }
+}
+$('design-new').onclick = () => openDesignBrief();
+$('design-close').onclick = () => { if (!designBusy) $('design-dialog').close(); };
+$('design-dialog').oncancel = e => { if (designBusy) e.preventDefault(); };
+$('design-refresh').onclick = () => refreshDesignJobs().catch(e => { $('design-feedback').textContent = e.message; });
+$('design-history').ontoggle = () => { if ($('design-history').open) $('design-refresh').click(); };
+$('design-form').onsubmit = async event => {
+  event.preventDefault();
+  if ($('design-submit').disabled) return;
+  designBusy = true;
+  $('design-submit').disabled = true;
+  try {
+    await request('/api/designs', { id: designId, company: $('design-company').value.trim(),
+      source: $('design-source').value, brief: $('design-brief').value.trim(),
+      area: designLead.area || '', sector: designLead.sector || '', website: designLead.website || '' });
+    $('design-feedback').textContent = 'Request saved. Check Recent design requests for progress and the finished website link.';
+    $('design-history').open = true;
+    $('design-refresh').click();
+  } catch (e) { $('design-feedback').textContent = e.message; $('design-submit').disabled = false; }
+  finally { designBusy = false; }
+};

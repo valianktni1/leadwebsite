@@ -190,3 +190,26 @@ test('bundled demos seed once and never overwrite dataset edits', async t => {
   await fs.writeFile(path.join(f.data, 'vale-plumbing/index.html'), '<h1>Edited locally</h1>'); await f.restart();
   assert.equal(await (await fetch(`${f.base}/vale-plumbing/`)).text(), '<h1>Edited locally</h1>');
 });
+
+test('private design queue keeps briefs across a restart and requires a paired connector to acknowledge', async t => {
+  const { randomUUID, randomBytes, createHash } = await import('node:crypto');
+  const f = await fixture(t);
+  const job = { id: randomUUID(), company: 'Studio Test', brief: 'A clean homepage' };
+  assert.equal((await f.api('/api/designs', job)).status, 401);
+  await f.setup();
+  assert.equal((await f.api('/api/designs', { ...job, source: 'missing' })).status, 400);
+  for (let i = 0; i < 2; i++) assert.equal((await f.api('/api/designs', job)).status, 201);
+  assert.equal((await (await f.api('/api/designs')).json()).jobs.length, 1);
+  const token = randomBytes(32).toString('hex');
+  await fs.writeFile(path.join(f.config, 'design-worker.sha256'), createHash('sha256').update(token).digest('hex'));
+  await f.restart();
+  const next = { action: 'next' }, headers = { Authorization: 'Bearer ' + token };
+  assert.equal((await f.api('/api/design-worker', next)).status, 401);
+  assert.equal((await (await f.api('/api/design-worker', next, headers)).json()).job.id, job.id);
+  const ack = { action: 'ack', id: job.id, status: 'Published', slug: 'company' };
+  assert.equal((await f.api('/api/design-worker', ack, headers)).status, 400);
+  await fs.mkdir(path.join(f.data, 'company'));
+  await fs.writeFile(path.join(f.data, 'company', 'index.html'), 'Example');
+  assert.equal((await f.api('/api/design-worker', ack, headers)).status, 200);
+  assert.equal((await (await f.api('/api/design-worker', next, headers)).json()).job, null);
+});
