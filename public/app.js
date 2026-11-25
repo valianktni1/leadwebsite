@@ -187,10 +187,15 @@ async function refreshDesignJobs() {
   }));
   if (!jobs.length) $('design-jobs').append(element('li', '', 'No requests yet.'));
 }
+function updateDesignBriefCount() {
+  $('design-brief-count').textContent = $('design-brief').value.length.toLocaleString('en-GB') + ' / 50,000 characters';
+}
+$('design-brief').addEventListener('input', updateDesignBriefCount);
 async function openDesignBrief(lead = {}) {
   designLead = lead;
   const version = designId = crypto.randomUUID();
   $('design-form').reset();
+  updateDesignBriefCount();
   $('design-history').open = false;
   $('design-company').value = lead.name || '';
   $('design-source').replaceChildren(new Option('Design a new concept', ''));

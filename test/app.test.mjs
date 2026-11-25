@@ -194,9 +194,14 @@ test('bundled demos seed once and never overwrite dataset edits', async t => {
 test('private design queue keeps briefs across a restart and requires a paired connector to acknowledge', async t => {
   const { randomUUID, randomBytes, createHash } = await import('node:crypto');
   const f = await fixture(t);
-  const job = { id: randomUUID(), company: 'Studio Test', brief: 'A clean homepage' };
+  const job = { id: randomUUID(), company: 'Studio Test', brief: 'Website prompt\n\n' + 'Layout, services and imagery. 漢字\n'.repeat(1700) };
+  job.brief = job.brief.slice(0, 50_000);
+  assert.equal(job.brief.length, 50_000);
   assert.equal((await f.api('/api/designs', job)).status, 401);
   await f.setup();
+  const oversized = await f.api('/api/designs', { ...job, brief: job.brief + 'x' });
+  assert.equal(oversized.status, 400);
+  assert.match((await oversized.json()).error, /50,000/);
   assert.equal((await f.api('/api/designs', { ...job, source: 'missing' })).status, 400);
   for (let i = 0; i < 2; i++) assert.equal((await f.api('/api/designs', job)).status, 201);
   assert.equal((await (await f.api('/api/designs')).json()).jobs.length, 1);
@@ -205,7 +210,9 @@ test('private design queue keeps briefs across a restart and requires a paired c
   await f.restart();
   const next = { action: 'next' }, headers = { Authorization: 'Bearer ' + token };
   assert.equal((await f.api('/api/design-worker', next)).status, 401);
-  assert.equal((await (await f.api('/api/design-worker', next, headers)).json()).job.id, job.id);
+  const restored = (await (await f.api('/api/design-worker', next, headers)).json()).job;
+  assert.equal(restored.id, job.id);
+  assert.equal(restored.brief, job.brief);
   const ack = { action: 'ack', id: job.id, status: 'Published', slug: 'company' };
   assert.equal((await f.api('/api/design-worker', ack, headers)).status, 400);
   await fs.mkdir(path.join(f.data, 'company'));

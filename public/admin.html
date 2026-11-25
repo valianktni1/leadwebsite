@@ -26,7 +26,8 @@
   <div class="dialog-head"><h2 id="design-title">Design a website</h2><button type="button" class="close" id="design-close" aria-label="Close design brief">×</button></div>
   <label>Business or concept name<input id="design-company" maxlength="200" required></label>
   <label>Starting point<select id="design-source"></select></label>
-  <label>Design brief<textarea id="design-brief" rows="4" maxlength="2500" placeholder="What should the site look like, and what should visitors do?"></textarea></label>
+  <label>Design brief<textarea id="design-brief" rows="10" maxlength="50000" aria-describedby="design-brief-help" placeholder="Paste your full website prompt, including layout, style, content and service details."></textarea></label>
+  <p class="help" id="design-brief-help">Paste a full prompt — up to 50,000 characters. <span id="design-brief-count">0 / 50,000 characters</span></p>
   <p class="help">Your Windows PC picks up the brief for the Lead Website App project. Each request creates a separate demo.</p>
   <button class="button dark full" id="design-submit">Send to project chat</button>
   <p id="design-feedback" role="status"></p>
