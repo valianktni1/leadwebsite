@@ -3,7 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs, createReadStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createAccountStore, RequestError } from './account.mjs';
 import { createLeadService } from './lib/leads.mjs';
 
@@ -50,6 +50,12 @@ export async function createApp(options = {}) {
     if (method === 'HEAD') return res.end();
     createReadStream(filename).on('error', () => res.destroy()).pipe(res);
   }
+  let adminPage = await fs.readFile(path.join(ROOT, 'public/admin.html'), 'utf8');
+  for (const script of ['app.js', 'leads.js']) {
+    const bytes = await fs.readFile(path.join(ROOT, 'public', script));
+    const version = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+    adminPage = adminPage.replace('{{' + script + '}}', version);
+  }
   const server=http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -66,7 +72,11 @@ export async function createApp(options = {}) {
         if (!['GET', 'HEAD'].includes(req.method) && (req.headers['sec-fetch-site'] === 'cross-site' || ![publicURL, `http://${req.headers.host}`].includes(req.headers.origin))) throw new RequestError(403, 'Use the dashboard to make changes.');
         if (await designs(req, res, pathname, json, account.authenticated(req))) return;
         if (await account.handle(req, res, pathname, json)) return;
-        if (pathname === '/admin' || pathname === '/admin/') return serve(res, path.join(ROOT, 'public', account.authenticated(req) ? 'admin.html' : 'auth.html'));
+        if (pathname === '/admin' || pathname === '/admin/') {
+          if (!account.authenticated(req)) return serve(res, path.join(ROOT, 'public/auth.html'));
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(req.method === 'HEAD' ? undefined : adminPage);
+        }
         if (['/admin/app.js', '/admin/style.css', '/admin/auth.js', '/admin/leads.js', '/admin/leads.css'].includes(pathname)) return serve(res, path.join(ROOT, 'public', path.basename(pathname)));
         if (!account.authenticated(req)) return json(res, 401, { error: 'Please sign in to manage your demos.' });
         if(await leads.handle(req,res,pathname,json))return;
