@@ -124,7 +124,12 @@ test('encrypted SMTP settings, password retention, test and demo messages, deliv
 
 test('saved sales sender reaches actual MIME headers and envelope for both send routes', async t => {
   const deliveries = [];
-  const f = await fixture(t, { mailTransport: settings => {
+  const copies = [];
+  const f = await fixture(t, { saveSentCopy: async (auth, raw) => {
+    assert.equal(auth.user, 'sales@ivorydigital.uk');
+    copies.push(raw);
+    if (copies.length === 2) throw new Error('IMAP unavailable');
+  }, mailTransport: settings => {
     const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
     return { async sendMail(message) { const result = await transport.sendMail(message); deliveries.push({ settings, result }); return result; } };
   } });
@@ -136,9 +141,18 @@ test('saved sales sender reaches actual MIME headers and envelope for both send 
   await f.restart(); await f.api('/api/auth/login', { email, password });
   const tested = await f.api('/api/email/test', {}); assert.equal(tested.status, 200);
   const receipt = await tested.json(); assert.equal(receipt.fromEmail, 'sales@ivorydigital.uk'); assert.ok(receipt.messageId);
+  assert.equal(receipt.sentCopy, 'saved');
+  assert.ok(copies[0].includes('Message-ID: ' + receipt.messageId));
   assert.match(receipt.message, /Email from sales@ivorydigital.uk accepted by smtp.hostinger.com/);
   await fs.mkdir(path.join(f.data, 'company')); await fs.writeFile(path.join(f.data, 'company/index.html'), '<h1>Company</h1>');
-  assert.equal((await f.api('/api/email/send', { to: 'lead@example.com', subject: 'Your demo', message: 'Take a look.', slug: 'company' })).status, 200);
+  const demo = await f.api('/api/email/send', { to: 'lead@example.com', subject: 'Your demo', message: 'Take a look.', slug: 'company' });
+  assert.equal(demo.status, 200);
+  assert.equal((await demo.json()).sentCopy, 'unconfirmed');
+  assert.equal(deliveries.length, 2);
+  assert.equal(copies.length, 2);
+  for (const [index, copy] of copies.entries()) {
+    assert.equal(copy.toString().trimEnd(), deliveries[index].result.message.toString().replace(/\r?\n/g, '\r\n').trimEnd());
+  }
   for (const { settings, result } of deliveries) {
     assert.equal(settings.auth.user, 'sales@ivorydigital.uk'); assert.equal(settings.secure, true);
     assert.equal(result.envelope.from, 'sales@ivorydigital.uk');

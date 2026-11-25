@@ -111,6 +111,8 @@ Each demo has **Send by email**. Enter one recipient, review/edit the subject an
 
 Send confirmations show the sender, SMTP server and message ID. Test messages include the configured sender and server, and all messages have an `X-Ivory-Digital-App: leadwebsite` header for tracing. These report what the app submitted; they do not claim that the receiving mailbox accepted SPF/DKIM/DMARC or placed the message in the inbox. The provider adds DKIM signatures using its own configured keys; the app does not generate or change your DNS records.
 
+With `smtp.hostinger.com`, the studio also files a copy in the authenticated mailbox's Sent folder after SMTP accepts the message. It uses the saved mailbox login over TLS on `imap.hostinger.com:993`. The confirmation reports whether filing succeeded. If the copy is unconfirmed, check Hostinger's outbound delivery log before sending again. This applies to new messages after the update.
+
 SMTP passwords use AES-256-GCM encryption with the key in `config/mail.key`. The admin password uses salted scrypt hashing. Back up the entire private config folder securely, including both `settings.json` and `mail.key`. Access to both files permits decrypting the SMTP password, so restrict filesystem permissions. Never commit this folder or put it in the public dataset. Session tokens live in memory, expire after 12 hours, and are invalidated on app restart. **Sign out** revokes the current session. Sign-in/setup requests are rate-limited.
 
 ## The two included website demos

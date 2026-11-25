@@ -4,6 +4,7 @@ import { randomBytes, createCipheriv, createDecipheriv, scrypt as scryptCallback
 import { promisify } from 'node:util';
 import nodemailer from 'nodemailer';
 import { createApifyClient, tokenOK } from './lib/apify.mjs';
+import { usesHostingerMailbox, saveHostingerSentCopy } from './lib/sent-mail.mjs';
 
 const scrypt = promisify(scryptCallback);
 export class RequestError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -16,7 +17,7 @@ export async function readJSON(req, max = 100_000) {
   catch { throw new RequestError(400, 'Invalid request data.'); }
 }
 
-export async function createAccountStore({ configDir, publicURL, mailTransport, demoExists, apifyToken, apifyClient=createApifyClient() }) {
+export async function createAccountStore({ configDir, publicURL, mailTransport, saveSentCopy = saveHostingerSentCopy, demoExists, apifyToken, apifyClient=createApifyClient() }) {
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
   const statePath = path.join(configDir, 'settings.json'), keyPath = path.join(configDir, 'mail.key');
   let state = {};
@@ -127,19 +128,38 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
           to = body.to; subject = body.subject; text = `${body.message.trim()}\n\nView your website demo: ${publicURL}/${body.slug}/`;
         }
         const transport = smtp(settings);
+        let receipt, archive;
         try {
           const sender = { name: settings.fromName, address: settings.fromEmail };
-          const result = await transport.sendMail({
+          let message = {
             from: sender,
             replyTo: sender,
             envelope: { from: settings.fromEmail, to: [to] },
             to: { address: to }, subject, text,
             headers: { 'X-Ivory-Digital-App': 'leadwebsite' }
-          });
+          };
+          if (usesHostingerMailbox(settings.host)) {
+            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' });
+            archive = await composer.sendMail(message);
+            message = { raw: archive.message, envelope: message.envelope, messageId: archive.messageId };
+          }
+          const result = await transport.sendMail(message);
           if (result.rejected?.length) throw new Error('Recipient rejected');
-          json(res, 200, { ok: true, fromEmail: settings.fromEmail, messageId: result.messageId, message: `Email from ${settings.fromEmail} accepted by ${settings.host} for ${to}.${result.messageId ? ` Message ID: ${result.messageId}` : ''}` });
+          const messageId = archive?.messageId || result.messageId;
+          receipt = { ok: true, fromEmail: settings.fromEmail, messageId, message: `Email from ${settings.fromEmail} accepted by ${settings.host} for ${to}.${messageId ? ` Message ID: ${messageId}` : ''}` };
         } catch { throw new RequestError(502, 'The mail server could not send this email. Check the saved SMTP credentials, sender address and TLS settings.'); }
         finally { transport.close?.(); }
+        if (archive) {
+          try {
+            await saveSentCopy({ user: settings.username, pass: decrypt(settings.secret) }, archive.message);
+            receipt.sentCopy = 'saved';
+            receipt.message += ` Copy saved in the Sent folder for ${settings.username}.`;
+          } catch {
+            receipt.sentCopy = 'unconfirmed';
+            receipt.message += ' Hostinger accepted the email. The Sent copy could not be confirmed. Check the delivery log before sending again.';
+          }
+        }
+        json(res, 200, receipt);
         return true;
       }
       return false;

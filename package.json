@@ -11,6 +11,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "imapflow": "2.12.2",
     "nodemailer": "10.6.1"
   }
 }

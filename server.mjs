@@ -21,7 +21,7 @@ export async function createApp(options = {}) {
   const dataReal = await fs.realpath(data);
   const configDir = path.resolve(options.configDir || process.env.CONFIG_DIR || './config');
   if (inside(dataReal, configDir)) throw new Error('CONFIG_DIR must be outside the public demo dataset.');
-  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, apifyToken:options.apifyToken, apifyClient:options.apifyClient, demoExists: async slug => {
+  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, saveSentCopy: options.saveSentCopy, apifyToken:options.apifyToken, apifyClient:options.apifyClient, demoExists: async slug => {
     try { const real = await fs.realpath(path.join(data, slug, 'index.html')); return slugOK(slug) && inside(path.join(dataReal, slug), real); } catch { return false; }
   } });
   const leads=await createLeadService({configDir,getToken:account.getApifyToken,apify:options.apifyClient,inspect:options.inspectWebsite});
