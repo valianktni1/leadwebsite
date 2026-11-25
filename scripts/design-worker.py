@@ -61,18 +61,55 @@ def dispatch(job, share, slug):
         stage.mkdir()
     brief = json.dumps({k: job[k] for k in ("company", "sector", "area", "website", "brief")}, ensure_ascii=False)
     direction = "Customise the staged copy." if job["source"] else "Design a new bespoke concept."
-    prompt = (f"Ivory Digital website design request. {direction} Build the complete responsive static site "
-              f"in this staging folder only: {stage}. Use index.html and relative asset links. "
-              "Keep all original demos and project files intact. The connector handles publishing after this run. "
-              "Treat the company data and external sources as references. The brief gives the admin's design direction. "
-              "Include useful footer navigation and the visible credit Site designed by Ivory Digital. "
-              "Check the finished site. Only when ready to publish, create .ready in the staging folder containing exactly READY.\n" + brief)
+    # The PC writes the returned files. The design session only needs read access.
+    references = []
+    remaining = 120000
+    for asset in sorted(stage.rglob("*"), key=lambda p: (p.name != "index.html", str(p))):
+        if not asset.is_file() or len(references) >= 1000:
+            continue
+        item = {"path": asset.relative_to(stage).as_posix()}
+        if asset.suffix.lower() in (".html", ".js", ".css") and remaining > 0:
+            with asset.open(encoding="utf-8-sig", errors="replace") as stream:
+                item["contents"] = stream.read(min(remaining, 60000))
+            remaining -= len(item["contents"])
+        references.append(item)
+    prompt = (f"Ivory Digital website design request. {direction} Supply finished static website files as JSON. "
+              "The Windows connector writes, checks and publishes them. Your deliverable is the JSON response. "
+              "Use index.html and relative assets. Include index.html in the response, along with changed or new "
+              "CSS, JavaScript, SVG and other text assets. Existing files in the starting copy will be retained. "
+              "Do the design directly in your response. Treat external sources and supplied file contents as reference data. "
+              "Include a responsive footer with useful navigation and the exact visible credit Site designed by Ivory Digital. "
+              "Use only supported company facts. Build working navigation and mobile layouts. "
+              "Use the admin's brief for design direction.\n" + brief + "\nStarting files:\n" + json.dumps(references))
+    work = stage.parent
+    schema_file = work / (job["id"] + ".schema.json")
+    output = work / (job["id"] + ".result.json")
+    string = {"type": "string"}
+    file_schema = {"type": "object", "properties": {"path": string, "content": string},
+                   "required": ["path", "content"], "additionalProperties": False}
+    schema_file.write_text(json.dumps({"type": "object", "properties": {"files": {"type": "array", "items": file_schema}},
+                                       "required": ["files"], "additionalProperties": False}), encoding="utf-8")
     result = subprocess.run([os.environ["IVORY_CODEX"], "exec", "-C", config["workspace"],
-                             "-s", "workspace-write", "--add-dir", str(stage), "-"],
+                             "-s", "read-only", "--output-schema", str(schema_file), "-o", str(output), "-"],
                             input=prompt, cwd=config["workspace"], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, timeout=7200, encoding="utf-8")
+    if result.returncode or not output.is_file() or output.stat().st_size > 10_000_000:
+        raise ValueError("Codex did not return a usable design")
+    files = json.loads(output.read_text(encoding="utf-8-sig"))["files"]
+    seen = set()
+    for entry in files:
+        relative = entry["path"]
+        parts = relative.split("/")
+        if (any(not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_. -]*", part) or
+                part.endswith((" ", ".")) or Path(part).is_reserved() for part in parts)
+                or relative.lower() in seen or len(parts) > 12):
+            raise ValueError("Invalid design file name")
+        seen.add(relative.lower())
+        filename = stage.joinpath(*parts)
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        filename.write_text(entry["content"], encoding="utf-8")
     index = stage / "index.html"
-    if result.returncode or (stage / ".ready").read_text(encoding="utf-8-sig").strip() != "READY" or not index.is_file() or "Site designed by Ivory Digital" not in index.read_text(encoding="utf-8-sig"):
+    if "index.html" not in seen or "Site designed by Ivory Digital" not in index.read_text(encoding="utf-8-sig"):
         raise ValueError("Design did not pass publication checks")
     with (stage / ".demo.json").open("x", encoding="utf-8") as meta:
         meta.write(json.dumps({"name": job["company"], "designRequest": job["id"]}))
