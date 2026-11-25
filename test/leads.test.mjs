@@ -29,13 +29,13 @@ test('website opportunities retain evidence without asserting an age',async()=>{
   assert.equal((await inspectWebsite('https://example.com',{fetchPage:async()=>{throw new Error('timeout');}})).status,'unavailable');
   assert.match((await inspectWebsite('')).reasons[0],/unlisted website/);
 });
-test('Apify receives a UK query, result limit, budget and no enrichment add-ons',async()=>{
+test('Apify receives a UK query, result limit, budget and business contacts without person enrichment',async()=>{
   const calls=[],token='apify_api_test_private_token';
   const client=createApifyClient({fetchAPI:async(url,options)=>{calls.push({url,options});let data;if(url.includes('/actors/'))data={data:{id:'run123',status:'RUNNING'}};else if(url.includes('/actor-runs/'))data={data:{id:'run123',status:'SUCCEEDED',defaultDatasetId:'dataset123'}};else data=[{title:'A business',countryCode:'GB'}];return new Response(JSON.stringify(data),{status:200});}});
   let runId;const results=await client.search({token,sector:'Plumbers',area:'Liverpool',limit:25,budget:0.5,onRun:id=>{runId=id;}});
   assert.equal(runId,'run123');assert.equal(results.items.length,1);assert.equal(calls.length,3);
   const url=new URL(calls[0].url);assert.equal(url.searchParams.get('maxTotalChargeUsd'),'0.5');assert.equal(url.searchParams.get('restartOnError'),'false');
-  const input=JSON.parse(calls[0].options.body);assert.equal(input.countryCode,'gb');assert.equal(input.locationQuery,'Liverpool, United Kingdom');assert.equal(input.maxCrawledPlacesPerSearch,25);assert.equal(input.scrapeContacts,false);assert.equal(input.maxReviews,0);assert.equal(input.maxImages,0);assert.equal(input.maximumLeadsEnrichmentRecords,0);assert.equal(input.enableCompetitorAnalysis,false);
+  const input=JSON.parse(calls[0].options.body);assert.equal(input.countryCode,'gb');assert.equal(input.locationQuery,'Liverpool, United Kingdom');assert.equal(input.maxCrawledPlacesPerSearch,25);assert.equal(input.scrapeContacts,true);assert.equal(input.maxReviews,0);assert.equal(input.maxImages,0);assert.equal(input.maximumLeadsEnrichmentRecords,0);assert.equal(input.enableCompetitorAnalysis,false);
   assert.equal(calls[0].options.headers.Authorization,`Bearer ${token}`);assert.equal(calls.some(call=>call.url.includes(token)),false);
 });
 test('ambiguous Apify start failures never create an automatic duplicate',async()=>{let attempts=0;const client=createApifyClient({fetchAPI:async()=>{attempts++;throw new Error('network error');}});await assert.rejects(client.search({token:'apify_api_test_private_token',sector:'Plumbers',area:'Leeds',limit:10,budget:0.25}),/did not confirm/);assert.equal(attempts,1);});

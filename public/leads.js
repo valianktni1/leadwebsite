@@ -24,6 +24,14 @@
   function card(lead,saved=false){
     const card=node('article','lead-card');const top=node('div','lead-card-top');top.append(node('span',`lead-tag assessment-${lead.assessment.status}`,labels[lead.assessment.status]||'Manual check needed'));if(saved)top.append(node('span','lead-status',statuses[lead.status]));card.append(top,node('h3','',lead.name),node('p','lead-category',`${lead.sector} · ${lead.area}`),node('p','lead-address',lead.address||'Address not supplied'));
     if(lead.phone)card.append(node('p','lead-phone',lead.phone));
+    const contact=node('p','lead-contact');
+    if(lead.email){
+      const link=node('a','',lead.email);
+      link.href='mailto:'+encodeURIComponent(lead.email).replace('%40','@');
+      contact.append('Email: ',link);
+      if(lead.emailSource)contact.append(' · ',external('Contact source',lead.emailSource));
+    }else contact.textContent='Business email unavailable';
+    card.append(contact);
     if(lead.rating!==null)card.append(node('p','help',`${lead.rating} / 5 · ${lead.reviewsCount??0} Google reviews`));
     const evidence=node('ul','lead-evidence');for(const reason of lead.assessment.reasons)evidence.append(node('li','',reason));card.append(evidence);
     const actions=node('div','lead-card-actions');if(lead.mapsURL)actions.append(external('View on Maps',lead.mapsURL));if(lead.website)actions.append(external('Visit website',lead.website));
