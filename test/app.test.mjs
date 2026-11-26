@@ -220,3 +220,43 @@ test('private design queue keeps briefs across a restart and requires a paired c
   assert.equal((await f.api('/api/design-worker', ack, headers)).status, 200);
   assert.equal((await (await f.api('/api/design-worker', next, headers)).json()).job, null);
 });
+test('campaign workflow ranks, verifies, links published work and records accepted outreach',async t=>{
+  const {randomUUID,randomBytes,createHash}=await import('node:crypto');
+  let runs=0, sends=0, rejectMail=true;
+  const f=await fixture(t,{apifyToken:'test',apifyClient:{search:async options=>{
+    runs++;assert.equal(options.budget,0.25);assert.equal(options.webResults,true);
+    return {items:[{title:'North Heat Pumps',placeId:'A',emails:['hello@example.com'],countryCode:'GB',website:'https://example.com'},
+      {title:'Other listing',placeId:'B',emails:['hello@example.com'],countryCode:'GB',website:'https://example.com'},
+      {title:'Gas Care',placeId:'C',countryCode:'GB'}]};
+  }},inspectWebsite:async url=>url?{status:'needs-review',score:3,reasons:['Missing mobile viewport.']}:{status:'no-listed-website',score:10,reasons:['No website listed.']},
+  mailTransport:()=>({async sendMail(){if(rejectMail)throw Error('rejected');sends++;return {messageId:'test-message'};}})});
+  const campaign={name:'Heating',area:'Liverpool',sectorId:'plumbers',limit:5,budget:0.25,weekly:true,include:['heat pump'],exclude:['emergency'],demos:[]};
+  assert.equal((await f.api('/api/campaigns',campaign)).status,401);
+  await f.setup();const {id}=await (await f.api('/api/campaigns',campaign)).json();
+  assert.equal(runs,0);
+  const view=async()=>(await (await f.api('/api/campaigns')).json()).campaigns[0];
+  assert.ok((await view()).nextRun>Date.now());
+  const run=await (await f.api('/api/campaigns/'+id+'/run',{})).json();
+  for(let i=0;i<100;i++){if((await(await f.api('/api/leads/searches/'+run.id)).json()).status==='complete')break;await new Promise(r=>setTimeout(r,10));}
+  let c=await view();assert.equal(c.ready.length,1);assert.equal(c.ready[0].name,'North Heat Pumps');assert.equal(c.review.length,1);
+  const leadId=c.ready[0].id,reviewId=c.review[0].id;
+  await f.api('/api/leads/review',{id:reviewId,action:'confirm'});await f.api('/api/leads/review',{id:reviewId,action:'email',email:'gas@example.org'});
+  assert.equal((await view()).ready.length,2);
+  const jobId=randomUUID();
+  assert.equal((await f.api('/api/designs',{id:jobId,company:'North Heat Pumps',leadId})).status,201);
+  await fs.mkdir(path.join(f.data,'heat'));await fs.writeFile(path.join(f.data,'heat','index.html'),'Demo');
+  const key=randomBytes(32).toString('hex');
+  await fs.writeFile(path.join(f.config,'design-worker.sha256'),createHash('sha256').update(key).digest('hex'));
+  assert.equal((await f.api('/api/design-worker',{action:'ack',id:jobId,status:'Published',slug:'heat'},{Authorization:'Bearer '+key})).status,200);
+  assert.deepEqual((await view()).ready.find(l=>l.id===leadId).demoSlugs,['heat']);
+  await f.api('/api/settings/smtp',{host:'smtp.example.com',port:465,security:'tls',fromEmail:'sales@example.com',fromName:'Ivory',username:'sales@example.com',password:'private-test-password'});
+  const draft={leadId,to:'hello@example.com',subject:'Website idea',message:'My introduction',slugs:['heat']};
+  assert.equal((await f.api('/api/email/send',draft)).status,502);
+  assert.equal((await view()).contacted.length,0);
+  rejectMail=false;assert.equal((await f.api('/api/email/send',draft)).status,200);
+  await f.restart();await f.api('/api/auth/login',{email,password});
+  c=await view();assert.equal(c.ready.length,1);assert.equal(c.contacted[0].mail[0].subject,'Website idea');assert.ok(c.contacted[0].followupAt>Date.now());
+  assert.equal((await f.api('/api/leads/review',{id:leadId,action:'done'})).status,200);
+  await f.api('/api/campaigns',{...campaign,id,weekly:false});
+  assert.equal((await view()).weekly,false);assert.equal(runs,1);assert.equal(sends,1);
+});

@@ -82,3 +82,24 @@ test('lead search auth, encrypted token import, UK filtering, shortlist persiste
   await new Promise(resolve=>server.close(resolve));await start();await api('/api/auth/login',{email:'owner@example.com',password:'a-long-admin-password'});
   saved=(await (await api('/api/leads/saved')).json()).leads;assert.equal(saved[0].status,'demo-created');assert.equal((await (await api('/api/settings/search')).json()).configured,true);
 });
+test('a due campaign runs once after restart and advances its weekly budget window',async t=>{
+  const {createLeadService}=await import('../lib/leads.mjs');
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'weekly-campaign-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'leads.json');
+  await fs.writeFile(file,JSON.stringify({saved:[],searches:[],campaigns:[{id:'test',sectorId:'plumbers',sector:'Plumbers',area:'Leeds',limit:5,budget:0.25,weekly:true,nextRun:1}]}));
+  let count=0;
+  const service=await createLeadService({configDir:dir,getToken:async()=>'mock',apify:{async search({budget}){assert.equal(budget,0.25);count++;return {items:[]};}}});
+  try{
+    await Promise.all([service.tick(),service.tick()]);
+    for(let i=0;i<30;i++){const state=JSON.parse(await fs.readFile(file,'utf8'));if(state.searches[0]?.status==='complete')break;await new Promise(r=>setTimeout(r,10));}
+    await service.tick();assert.equal(count,1);
+    const state=JSON.parse(await fs.readFile(file,'utf8'));assert.equal(state.searches.length,1);assert.ok(state.campaigns[0].nextRun>Date.now()+6*86400000);
+  }finally{await service.close();}
+});
+test('a candidate website needs matching business name, phone and official domain',async()=>{
+  const {findOfficialWebsite}=await import('../lib/websites.mjs');
+  const lead={name:'Test Heating',phone:'0161 555 0123',possibleSites:['https://heat.example/']};
+  const page=async()=>({status:200,finalURL:'https://heat.example/',html:'<script type="application/ld+json">'+JSON.stringify({'@type':'LocalBusiness',name:lead.name,telephone:'+44 161 555 0123',url:'https://heat.example/'})+'</script>'});
+  assert.equal(await findOfficialWebsite(lead,page),'https://heat.example/');
+  assert.equal(await findOfficialWebsite({...lead,name:'Other Heating'},page),'');
+});

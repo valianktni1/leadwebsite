@@ -71,8 +71,10 @@ function updateEmailLinks() {
   for (const slug of selected) preview.append(element('p', 'email-preview', demos.find(demo => demo.slug === slug).url));
 }
 for (const select of demoSelectors) select.onchange = updateEmailLinks;
-async function openEmailComposer({ lead, demo }) {
+let emailLeadId;
+async function openEmailComposer({ lead, demo, followup=false }) {
   const version = ++composerVersion;
+  emailLeadId=lead?.id;
   const company = lead?.name || demo.name;
   $('email-form').reset();
   $('email-error').hidden = true;
@@ -82,13 +84,19 @@ async function openEmailComposer({ lead, demo }) {
   $('email-message').value = lead
     ? `Hi ${company} team,\n\nI came across your business on Google Maps and wanted to introduce myself. I’m Mark from Ivory Digital. I design websites that make it easy for local customers to see what you offer and get in touch.\n\nWould you be interested in seeing how a site could look for ${company}? I’d be happy to put a few ideas together.\n\nBest wishes,\nMark\nIvory Digital`
     : `Hi,\n\nI’ve put together a website concept for ${company} and thought you might like to take a look.\n\nI’d love to hear what you think.\n\nIvory Digital`;
+  if(lead?.area && !followup)$('email-message').value=$('email-message').value.replace('on Google Maps','on Google Maps while looking at '+lead.sector.toLowerCase()+' in '+lead.area);
+  if(followup){
+    $('email-subject').value='Following up on my website idea for '+company;
+    $('email-message').value=`Hi ${company} team,\n\nI wanted to follow up on the website idea I sent over. Would it be helpful if I talked you through it or tailored an example to your business?\n\nBest wishes,\nMark\nIvory Digital`;
+  }
   $('email-links').replaceChildren();
   for (const select of demoSelectors) { select.replaceChildren(new Option('Loading collection…', '')); select.disabled = true; }
   $('email-sender').textContent = 'Loading your saved sender…';
   $('send-email').disabled = true;
   $('email-dialog').showModal();
   try {
-    const [settings, collection] = await Promise.all([request('/api/settings/smtp'), request('/api/demos')]);
+    const [settings, collection, saved] = await Promise.all([request('/api/settings/smtp'), request('/api/demos'), lead ? request('/api/leads/saved') : null]);
+    if(lead)lead={...lead,...saved.leads.find(item=>item.id===lead.id)};
     if (version !== composerVersion) return;
     demos = collection.demos;
     for (const select of demoSelectors) {
@@ -97,6 +105,10 @@ async function openEmailComposer({ lead, demo }) {
       select.disabled = !demos.length;
     }
     if (demo) $('demo-first').value = demo.slug;
+    if(lead){
+      const picks=[...new Set([...(lead.demoSlugs||[]),...(lead.campaignDemos||[]),...(followup?lead.mail?.[0]?.slugs||[]:[])])].filter(slug=>demos.some(d=>d.slug===slug));
+      demoSelectors.forEach((select,i)=>select.value=picks[i]||'');
+    }
     updateEmailLinks();
     $('email-sender').textContent = settings.passwordSaved ? `Sending from ${settings.fromEmail}` : 'Save your SMTP settings using Email settings before sending.';
     $('send-email').disabled = !settings.passwordSaved;
@@ -165,8 +177,8 @@ $('test-smtp').onclick = async () => {
 $('email-form').onsubmit = async event => {
   event.preventDefault(); if ($('send-email').disabled) return; $('close-email').disabled = true; $('send-email').disabled = true; $('send-email').textContent = 'Sending…'; $('email-error').hidden = true;
   try {
-    const result = await request('/api/email/send', { slugs: selectedDemoSlugs(), to: $('email-to').value.trim(), subject: $('email-subject').value, message: $('email-message').value });
-    $('email-dialog').close(); $('email-form').reset(); showNotice(result.message);
+    const result = await request('/api/email/send', { leadId:emailLeadId, slugs: selectedDemoSlugs(), to: $('email-to').value.trim(), subject: $('email-subject').value, message: $('email-message').value });
+    $('email-dialog').close(); $('email-form').reset(); showNotice(result.message); window.dispatchEvent(new Event("lead-updated"));
   } catch (error) { $('email-error').textContent = error.message; $('email-error').hidden = false; }
   finally { $('close-email').disabled = false; $('send-email').disabled = false; $('send-email').textContent = 'Send email'; }
 };
@@ -206,6 +218,7 @@ async function openDesignBrief(lead = {}) {
     const collection = await request('/api/demos');
     if (version !== designId) return;
     for (const demo of collection.demos) $('design-source').add(new Option('Customise a copy of ' + demo.name, demo.slug));
+    if(lead.campaignDemos?.length && collection.demos.some(d=>d.slug===lead.campaignDemos[0]))$('design-source').value=lead.campaignDemos[0];
     $('design-submit').disabled = false;
   } catch (e) { $('design-feedback').textContent = e.message; }
 }
@@ -220,7 +233,7 @@ $('design-form').onsubmit = async event => {
   designBusy = true;
   $('design-submit').disabled = true;
   try {
-    await request('/api/designs', { id: designId, company: $('design-company').value.trim(),
+    await request('/api/designs', { id: designId, leadId:designLead.id, company: $('design-company').value.trim(),
       source: $('design-source').value, brief: $('design-brief').value.trim(),
       area: designLead.area || '', sector: designLead.sector || '', website: designLead.website || '' });
     $('design-feedback').textContent = 'Request saved. Check Recent design requests for progress and the finished website link.';

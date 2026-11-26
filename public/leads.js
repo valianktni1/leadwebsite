@@ -6,7 +6,7 @@
   function node(tag,className='',text=''){const item=document.createElement(tag);item.className=className;item.textContent=text;return item;}
   async function api(url,body){const response=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(response.status===401){location.replace('/admin');throw new Error('Please sign in again.');}const data=await response.json();if(!response.ok)throw new Error(data.error||'Unable to complete this request.');return data;}
   function error(id,message){$(id).textContent=message;$(id).hidden=!message;}
-  function tab(panel){for(const button of document.querySelectorAll('.studio-nav [role=tab]')){const active=button.dataset.panel===panel;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.dataset.panel).hidden=!active;}if(panel==='saved-panel')loadSaved().catch(e=>error('saved-notice',e.message));}
+  function tab(panel){for(const button of document.querySelectorAll('.studio-nav [role=tab]')){const active=button.dataset.panel===panel;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;$(button.dataset.panel).hidden=!active;}if(panel==='campaign-panel')refreshCampaigns().catch(campaignError);if(panel==='saved-panel')loadSaved().catch(e=>error('saved-notice',e.message));}
   $('footer-find-leads').onclick=event=>{event.preventDefault();tab('find-panel');$('tab-find').focus();};
   const tabs=[...document.querySelectorAll('.studio-nav [role=tab]')];
   for(const button of tabs){button.onclick=()=>tab(button.dataset.panel);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();let index=tabs.indexOf(button);index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[index].focus();tab(tabs[index].dataset.panel);};}
@@ -22,6 +22,7 @@
   async function loadSaved(){state.saved=(await api('/api/leads/saved')).leads;$('saved-count').textContent=state.saved.length;renderSaved();renderResults();}
   function external(label,url){const a=node('a','button light',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
   function card(lead,saved=false){
+    lead={...lead,...state.saved.find(item=>item.id===lead.id),campaignDemos:lead.campaignDemos};
     const card=node('article','lead-card');const top=node('div','lead-card-top');top.append(node('span',`lead-tag assessment-${lead.assessment.status}`,labels[lead.assessment.status]||'Manual check needed'));if(saved)top.append(node('span','lead-status',statuses[lead.status]));card.append(top,node('h3','',lead.name),node('p','lead-category',`${lead.sector} · ${lead.area}`),node('p','lead-address',lead.address||'Address not supplied'));
     if(lead.phone)card.append(node('p','lead-phone',lead.phone));
     const contact=node('p','lead-contact');
@@ -35,8 +36,15 @@
     if(lead.rating!==null)card.append(node('p','help',`${lead.rating} / 5 · ${lead.reviewsCount??0} Google reviews`));
     const evidence=node('ul','lead-evidence');for(const reason of lead.assessment.reasons)evidence.append(node('li','',reason));card.append(evidence);
     const actions=node('div','lead-card-actions');if(lead.mapsURL)actions.append(external('View on Maps',lead.mapsURL));if(lead.website)actions.append(external('Visit website',lead.website));
-    const emailButton=node('button','button dark','Email lead');
-    emailButton.onclick=()=>openEmailComposer({lead});
+    for(const slug of lead.demoSlugs||[])card.append(external('View personalised demo', '/'+encodeURIComponent(slug)+'/'));
+    if(lead.mail?.length){
+      const details=node('details');details.append(node('summary','', 'Email history ('+lead.mail.length+')'));
+      for(const entry of lead.mail){details.append(node('h4','',entry.subject),node('p','help',new Date(entry.at).toLocaleString('en-GB')+' · '+entry.to),node('pre','lead-notes',entry.text));}
+      card.append(details);
+    }
+    if(lead.followupAt)card.append(node('p','help','Follow up '+new Date(lead.followupAt).toLocaleDateString('en-GB')));
+    const emailButton=node('button','button dark',lead.followup?'Prepare follow-up':lead.campaignDemos?'Prepare outreach':'Email lead');
+    emailButton.onclick=()=>openEmailComposer({lead,followup:lead.followup});
     const designButton=node('button','button light','Design a website');
     designButton.onclick=()=>openDesignBrief(lead);
     actions.prepend(emailButton,designButton);
@@ -53,7 +61,104 @@
   $('lead-search-form').onsubmit=async event=>{event.preventDefault();error('lead-error','');$('start-lead-search').disabled=true;try{const job=await api('/api/leads/searches',{sectorId:$('lead-sector').value,area:$('lead-area').value.trim(),limit:Number($('lead-limit').value),budget:Number($('lead-budget').value)});state.searches.unshift(job);await showJob(job.id);}catch(e){error('lead-error',e.message);searchButton();}};
   for(const id of ['lead-filter','lead-result-query'])$(id).addEventListener('input',renderResults);for(const id of ['saved-query','saved-filter'])$(id).addEventListener('input',renderSaved);
   $('close-lead-notes').onclick=()=>$('lead-notes-dialog').close();
-  $('lead-notes-form').onsubmit=async event=>{event.preventDefault();error('notes-error','');$('save-lead-notes').disabled=true;try{await api(`/api/leads/saved/${state.notesId}`,{status:$('notes-status').value,notes:$('notes-text').value});$('lead-notes-dialog').close();await loadSaved();}catch(e){error('notes-error',e.message);}finally{$('save-lead-notes').disabled=false;}};
+  $('lead-notes-form').onsubmit=async event=>{event.preventDefault();error('notes-error','');$('save-lead-notes').disabled=true;try{await api(`/api/leads/saved/${state.notesId}`,{status:$('notes-status').value,notes:$('notes-text').value});$('lead-notes-dialog').close();await loadSaved();if(!$('campaign-panel').hidden)await refreshCampaigns();}catch(e){error('notes-error',e.message);}finally{$('save-lead-notes').disabled=false;}};
+  let campaigns=[],activeId='',editId='',refreshVersion=0;
+  const campaignError=e=>error('campaign-notice',e.message);
+  const activeCampaign=()=>campaigns.find(c=>c.id===activeId);
+  function action(title,fn){
+    const b=node('button','button light',title);b.type='button';
+    b.onclick=async()=>{b.disabled=true;try{await fn();}catch(e){campaignError(e);}finally{b.disabled=false;}};return b;
+  }
+  async function refreshCampaigns(){
+    const version=++refreshVersion;
+    const [result,saved]=await Promise.all([api('/api/campaigns'),api('/api/leads/saved')]);
+    if(version!==refreshVersion)return;
+    state.saved=saved.leads;$('saved-count').textContent=state.saved.length;
+    campaigns=result.campaigns;
+    if(!activeCampaign())activeId=campaigns[0]?.id||'';
+    $('campaign-select').replaceChildren(...campaigns.map(c=>new Option(c.name,c.id)));
+    $('campaign-select').value=activeId;error('campaign-notice','');renderCampaign();
+  }
+  async function review(lead,action,value){
+    await api('/api/leads/review',{id:lead.id,action,...value});await refreshCampaigns();
+  }
+  function renderCampaign(){
+    const c=activeCampaign(),summary=$('campaign-summary'),work=$('campaign-work');
+    summary.replaceChildren();work.replaceChildren();
+    if(!c){empty(work,'Create your first campaign','Choose a sector, search area and website examples. Matching saved leads can be used immediately.');return;}
+    summary.append(node('p','',c.sector+' · '+c.area+' · '+c.limit+' results · $'+c.budget.toFixed(2)+' maximum per run'),
+      node('p','help',c.weekly?'Weekly · next search '+new Date(c.nextRun).toLocaleString('en-GB'):'Manual searches only'));
+    if(c.lastSearch||c.lastError)summary.append(node('p','help',c.lastError||c.lastSearch));
+    const controls=node('div','lead-card-actions');
+    controls.append(action('Edit campaign',()=>editCampaign(c)),action('Run search · up to $'+c.budget.toFixed(2),async()=>{
+      const job=await api('/api/campaigns/'+c.id+'/run',{});await refreshCampaigns();
+      async function check(){
+        const current=await api('/api/leads/searches/'+job.id);
+        if(current.status==='running'){setTimeout(()=>check().catch(campaignError),3000);return;}
+        if(!$('campaign-panel').hidden)await refreshCampaigns();
+      }
+      await check();
+    }),action('Refresh shortlist',refreshCampaigns));summary.append(controls);
+    for(const [title,items,kind] of [['Ready to contact',c.ready,'ready'],['Due for follow-up',c.followups,'follow'],['Needs a website or email check',c.review,'review'],['Contact history',c.contacted,'history']]){
+      const section=node(['review','history'].includes(kind)?'details':'section');
+      section.append(node(['review','history'].includes(kind)?'summary':'h2','',title+' ('+items.length+')'));
+      const grid=node('div','lead-results');
+      if(!items.length)grid.append(node('p','help',kind==='ready'?'Leads with an email and a checked website opportunity appear here.':kind==='follow'?'No follow-ups due.':'No outstanding checks.'));
+      for(const l of items){
+        const row=card({...l,campaignDemos:c.demos,followup:kind==='follow'||kind==='history'},true);
+        if(kind==='ready')row.prepend(node('p','help',(l.reasons||[]).filter(x=>x.startsWith('Listing mentions')||x.startsWith('Lower priority')).join(' · ')));
+        if(kind==='follow')row.append(action('Complete follow-up',()=>review(l,'done')));
+        if(kind==='review'){
+          if(!l.website && !l.websiteVerifiedAbsent){
+            row.append(external('Check for official website','https://www.google.co.uk/search?q='+encodeURIComponent(l.name+' '+l.address+' official website')));
+            for(const url of l.possibleSites||[])row.append(external('Check candidate · '+new URL(url).hostname,url));
+            const input=document.createElement('input');input.type='url';input.placeholder='https://';const label=node('label','','Official website found');label.append(input);
+            row.append(label,action('Assess this website',()=>review(l,'website',{website:input.value.trim()})),action('Checked · no official site found',()=>review(l,'confirm')));
+          }
+          if(!l.email){
+            const input=document.createElement('input');input.type='email';const label=node('label','','Published business email');label.append(input);
+            row.append(label,action('Save contact email',()=>review(l,'email',{email:input.value.trim()})));
+          }
+        }
+        grid.append(row);
+      }
+      section.append(grid);work.append(section);
+    }
+  }
+  function recommend(){
+    const sector=$('camp-sector').selectedOptions[0]?.textContent.toLowerCase()||'';
+    const words=sector.match(/plumb|heat|dent|bridal|wedding|kitchen/g)||[];
+    const picks=[...$('camp-demo1').options].filter(o=>o.value&&words.some(w=>o.text.toLowerCase().includes(w)));
+    $('camp-demo1').value=picks[0]?.value||'';$('camp-demo2').value=picks[1]?.value||'';
+  }
+  async function editCampaign(c){
+    const [collection,sectors]=await Promise.all([api('/api/demos'),api('/api/leads/sectors')]);
+    editId=c?.id||''; $('camp-error').textContent='';
+    $('camp-sector').replaceChildren(...sectors.groups.flatMap(g=>g.sectors.map(s=>new Option(s.label,s.id))));
+    $('camp-sector').value=c?.sectorId||$('lead-sector').value||'plumbers';
+    for(const id of ['camp-demo1','camp-demo2'])$(id).replaceChildren(new Option('No example',''),...collection.demos.map(d=>new Option(d.name,d.slug)));
+    $('camp-name').value=c?.name||'';$('camp-area').value=c?.area||$('lead-area').value;
+    $('camp-limit').value=c?.limit||20;$('camp-budget').value=c?.budget||1;
+    $('camp-weekly').value=c?.weekly?'on':'off';
+    $('camp-include').value=(c?.include||[]).join(', ');$('camp-exclude').value=(c?.exclude||[]).join(', ');
+    if(c){$('camp-demo1').value=c.demos[0]||'';$('camp-demo2').value=c.demos[1]||'';}else recommend();
+    $('campaign-editor').showModal();
+  }
+  $('camp-sector').onchange=recommend;
+  $('campaign-close').onclick=()=>$('campaign-editor').close();
+  $('campaign-new').onclick=()=>editCampaign().catch(campaignError);
+  $('campaign-select').onchange=()=>{activeId=$('campaign-select').value;renderCampaign();};
+  $('campaign-form').onsubmit=async event=>{
+    event.preventDefault();const button=event.submitter;if(button)button.disabled=true;
+    const phrases=id=>$(id).value.split(',').map(x=>x.trim()).filter(Boolean);
+    try{
+      const result=await api('/api/campaigns',{id:editId,name:$('camp-name').value,sectorId:$('camp-sector').value,area:$('camp-area').value,
+        budget:Number($('camp-budget').value),limit:Number($('camp-limit').value),weekly:$('camp-weekly').value==='on',
+        include:phrases('camp-include'),exclude:phrases('camp-exclude'),demos:[$('camp-demo1').value,$('camp-demo2').value].filter(Boolean)});
+      activeId=result.id;$('campaign-editor').close();await refreshCampaigns();
+    }catch(e){$('camp-error').textContent=e.message;}finally{if(button)button.disabled=false;}
+  };
+  window.addEventListener('lead-updated',()=>{loadSaved().catch(campaignError);if(!$('campaign-panel').hidden)refreshCampaigns().catch(campaignError);});
   async function init(){try{const [sectorsData,searchData]=await Promise.all([api('/api/leads/sectors'),api('/api/leads/searches')]);state.groups=sectorsData.groups;state.searches=searchData.searches;sectors();history();await Promise.all([connection(),loadSaved()]);if(state.searches.length)await showJob(state.searches[0].id);else renderResults();}catch(e){error('lead-error',e.message);}}
   init();
 })();

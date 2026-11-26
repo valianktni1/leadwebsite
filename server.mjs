@@ -25,8 +25,8 @@ export async function createApp(options = {}) {
   const demoExists = async slug => {
     try { const real = await fs.realpath(path.join(data, slug, 'index.html')); return slugOK(slug) && inside(path.join(dataReal, slug), real); } catch { return false; }
   };
-  const designs = designQueue(configDir, demoExists);
-  const account = await createAccountStore({ configDir, publicURL, mailTransport: options.mailTransport, saveSentCopy: options.saveSentCopy, apifyToken: options.apifyToken, apifyClient: options.apifyClient, demoExists });
+  const designs = designQueue(configDir, demoExists, id=>leads.prepareLead(id), (id,slug)=>leads.attachDemo(id,slug));
+  const account = await createAccountStore({ prepareLead:id=>leads.prepareLead(id),recordMail:(id,entry)=>leads.recordMail(id,entry), configDir, publicURL, mailTransport: options.mailTransport, saveSentCopy: options.saveSentCopy, apifyToken: options.apifyToken, apifyClient: options.apifyClient, demoExists });
   const leads=await createLeadService({configDir,getToken:account.getApifyToken,apify:options.apifyClient,inspect:options.inspectWebsite});
   if (options.seedDir !== false) {
     const seeds = options.seedDir || path.join(ROOT, 'seed-demos');

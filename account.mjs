@@ -17,7 +17,7 @@ export async function readJSON(req, max = 100_000) {
   catch { throw new RequestError(400, 'Invalid request data.'); }
 }
 
-export async function createAccountStore({ configDir, publicURL, mailTransport, saveSentCopy = saveHostingerSentCopy, demoExists, apifyToken, apifyClient=createApifyClient() }) {
+export async function createAccountStore({ configDir, publicURL, mailTransport, saveSentCopy = saveHostingerSentCopy, prepareLead, recordMail, demoExists, apifyToken, apifyClient=createApifyClient() }) {
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
   const statePath = path.join(configDir, 'settings.json'), keyPath = path.join(configDir, 'mail.key');
   let state = {};
@@ -137,6 +137,8 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
           to = body.to; subject = body.subject; text = body.message.trim();
           if (links.length) text += `\n\n${links.length === 1 ? 'Website example' : 'Website examples'}:\n${links.join('\n')}`;
         }
+        const leadId=pathname.endsWith('/send') && body.leadId;
+        if(leadId)await prepareLead(leadId);
         const transport = smtp(settings);
         let receipt, archive;
         try {
@@ -159,6 +161,10 @@ export async function createAccountStore({ configDir, publicURL, mailTransport, 
           receipt = { ok: true, fromEmail: settings.fromEmail, messageId, message: `Email from ${settings.fromEmail} accepted by ${settings.host} for ${to}.${messageId ? ` Message ID: ${messageId}` : ''}` };
         } catch { throw new RequestError(502, 'The mail server could not send this email. Check the saved SMTP credentials, sender address and TLS settings.'); }
         finally { transport.close?.(); }
+        if(leadId){
+          try{await recordMail(leadId,{at:new Date().toISOString(),to,subject,text,slugs:body.slugs??[body.slug],messageId:receipt.messageId});}
+          catch{receipt.message+=' The lead history could not be saved. Check Sent before contacting this business again.';}
+        }
         if (archive) {
           try {
             await saveSentCopy({ user: settings.username, pass: decrypt(settings.secret) }, archive.message);
